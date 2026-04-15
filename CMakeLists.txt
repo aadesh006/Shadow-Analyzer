@@ -5,4 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 #core executable
-add_executable(shadow core/src/main.cpp)
+add_executable(shadow 
+    core/src/main.cpp
+    core/src/sandbox.cpp
+)

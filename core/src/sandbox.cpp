@@ -35,3 +35,45 @@ int Sandbox::child_entry(void* arg) {
     
     return 0; //if execvp fails
 }
+
+int Sandbox::run(const std::string& command, const std::vector<std::string>& args) {
+    char* stack = new char[STACK_SIZE];
+    
+    // On x86/ARM architectures, stacks grow downwards in memory. 
+    // So we must pass the TOP of the allocated memory block to clone().
+    char* stack_top = stack + STACK_SIZE;
+
+    std::vector<char*> c_args;
+    c_args.push_back(const_cast<char*>(command.c_str()));
+    
+    for (const auto& arg : args) {
+        c_args.push_back(const_cast<char*>(arg.c_str()));
+    }
+    c_args.push_back(nullptr); // Must be null-terminated
+
+    ChildArgs child_args = { command.c_str(), c_args.data() };
+
+    std::cout << "[Shadow] Spawning isolated namespaces..." << std::endl;
+
+    //The Isolation Logic
+    int flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | SIGCHLD;
+    
+    pid_t child_pid = clone(child_entry, stack_top, flags, &child_args);
+
+    if (child_pid == -1) {
+        std::cerr << "[Shadow] clone() failed! Are you running as root? Error: " << strerror(errno) << std::endl;
+        delete[] stack;
+        return -1;
+    }
+
+    std::cout << "[Shadow] Sandbox created. Host mapped PID: " << child_pid << std::endl;
+
+    //Wait for the sandbox to finish its execution
+    int status;
+    waitpid(child_pid, &status, 0);
+
+    std::cout << "[Shadow] Sandbox execution completed." << std::endl;
+
+    delete[] stack;
+    return WEXITSTATUS(status);
+}
