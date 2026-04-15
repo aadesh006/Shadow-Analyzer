@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <vector>
+#include <sys/mount.h>
 
 // Allocate 1MB for the child process stack
 const int STACK_SIZE = 1024 * 1024; 
@@ -27,13 +28,24 @@ int Sandbox::child_entry(void* arg) {
     
     std::cout << "[Sandbox] Child process alive. Internal PID: " << getpid() << std::endl;
     
-    // execvp replaces our C++ thread with the target program (e.g., 'npm' or 'sh')
+    // Mark the root filesystem as PRIVATE for this namespace.
+    if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+        std::cerr << "[Sandbox] Failed to make mounts private: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    if (mount("proc", "/proc", "proc", 0, NULL) == -1) {
+        std::cerr << "[Sandbox] Failed to mount isolated /proc: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    //Execute the target program
     if (execvp(args->command, args->argv) == -1) {
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
     }
     
-    return 0; //if execvp fails
+    return 0; 
 }
 
 int Sandbox::run(const std::string& command, const std::vector<std::string>& args) {
@@ -45,7 +57,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
 
     std::vector<char*> c_args;
     c_args.push_back(const_cast<char*>(command.c_str()));
-    
+
     for (const auto& arg : args) {
         c_args.push_back(const_cast<char*>(arg.c_str()));
     }
@@ -53,7 +65,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
 
     ChildArgs child_args = { command.c_str(), c_args.data() };
 
-    std::cout << "[Shadow] Spawning isolated namespaces..." << std::endl;
+    std::cout << "[Shadow] Spawning isolated namespaces" << std::endl;
 
     //The Isolation Logic
     int flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | SIGCHLD;
