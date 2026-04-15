@@ -40,7 +40,7 @@ int Sandbox::child_entry(void* arg) {
     }
 
     //Execute the target program
-    if (execvp(args->command, args->argv) == -1) {
+    if (execvp(args->argv[0], args->argv) == -1) {
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
     }
