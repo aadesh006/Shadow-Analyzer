@@ -40,7 +40,7 @@ int Sandbox::child_entry(void* arg) {
     }
 
     //Execute the target program
-    if (execvp(args->command, args->argv) == -1) {
+    if (execvp(args->argv[0], args->argv) == -1) {
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
     }
@@ -55,7 +55,17 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     // So we must pass the TOP of the allocated memory block to clone().
     char* stack_top = stack + STACK_SIZE;
 
+    // Format arguments for standard C-style execvp
     std::vector<char*> c_args;
+    
+    c_args.push_back(const_cast<char*>("strace"));
+    c_args.push_back(const_cast<char*>("-f")); 
+    c_args.push_back(const_cast<char*>("-e"));
+    c_args.push_back(const_cast<char*>("trace=execve,openat,connect")); 
+    c_args.push_back(const_cast<char*>("-o"));
+    c_args.push_back(const_cast<char*>("shadow_trace.log"));
+    
+    //append the actual target command (e.g., 'sh' or 'npm')
     c_args.push_back(const_cast<char*>(command.c_str()));
 
     for (const auto& arg : args) {

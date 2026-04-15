@@ -18,13 +18,19 @@ int main(int argc, char* argv[]) {
         
         Sandbox sandbox;
         
-        // spawn a shell inside the sandbox and ask it to list all processes
+        std::string pkg_manager = "npm";
+        
+        // instruct npm to install the specific target package.
         std::vector<std::string> args = {
-            "-c", 
-            "echo '--- Inside the Sandbox ---'; ps -ef"
+            "install", 
+            target,
+            "--ignore-scripts=false",
+            "--no-audit",
+            "--no-fund"
         };
         
-        sandbox.run("sh", args);
+        std::cout << "[Shadow] Launching " << pkg_manager << " inside sandbox..." << std::endl;
+        sandbox.run(pkg_manager, args);
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
