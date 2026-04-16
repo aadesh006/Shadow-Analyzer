@@ -8,4 +8,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_executable(shadow 
     core/src/main.cpp
     core/src/sandbox.cpp
+    core/src/parser.cpp
 )
