@@ -52,6 +52,8 @@ int Sandbox::child_entry(void* arg) {
     //forcefully restrict the PATH to standard Linux native directories.
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
 
+    setenv("HOME", "/tmp", 1);//Force npm to believe its home directory is our RAM disk
+
     if (execvp(args->argv[0], args->argv) == -1) {
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
@@ -72,6 +74,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     
     c_args.push_back(const_cast<char*>("strace"));
     c_args.push_back(const_cast<char*>("-f"));
+    c_args.push_back(const_cast<char*>("-ff")); //fix for strace multithreading bug
     c_args.push_back(const_cast<char*>("-e"));
     c_args.push_back(const_cast<char*>("trace=execve,openat,connect"));
     c_args.push_back(const_cast<char*>("-o"));
