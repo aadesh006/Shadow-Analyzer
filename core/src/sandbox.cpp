@@ -28,7 +28,6 @@ int Sandbox::child_entry(void* arg) {
     
     std::cout << "[Sandbox] Child process alive. Internal PID: " << getpid() << std::endl;
     
-    // Mark the root filesystem as PRIVATE for this namespace.
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
         std::cerr << "[Sandbox] Failed to make mounts private: " << strerror(errno) << std::endl;
         return -1;
@@ -39,7 +38,20 @@ int Sandbox::child_entry(void* arg) {
         return -1;
     }
 
-    //Execute the target program
+    // The RAM-Disk: Mount tmpfs over /tmp to intercept file writes
+    if (mount("tmpfs", "/tmp", "tmpfs", 0, "size=100m") == -1) {
+        std::cerr << "[Sandbox] Failed to mount tmpfs: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    if (chdir("/tmp") == -1) {
+        std::cerr << "[Sandbox] Failed to chdir to /tmp: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    //forcefully restrict the PATH to standard Linux native directories.
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+
     if (execvp(args->argv[0], args->argv) == -1) {
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
