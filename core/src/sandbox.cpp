@@ -71,15 +71,14 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     std::vector<char*> c_args;
     
     c_args.push_back(const_cast<char*>("strace"));
-    c_args.push_back(const_cast<char*>("-f")); 
+    c_args.push_back(const_cast<char*>("-f"));
     c_args.push_back(const_cast<char*>("-e"));
-    c_args.push_back(const_cast<char*>("trace=execve,openat,connect")); 
+    c_args.push_back(const_cast<char*>("trace=execve,openat,connect"));
     c_args.push_back(const_cast<char*>("-o"));
     c_args.push_back(const_cast<char*>("shadow_trace.log"));
     
     //append the actual target command (e.g., 'sh' or 'npm')
     c_args.push_back(const_cast<char*>(command.c_str()));
-
     for (const auto& arg : args) {
         c_args.push_back(const_cast<char*>(arg.c_str()));
     }
@@ -90,7 +89,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     std::cout << "[Shadow] Spawning isolated namespaces" << std::endl;
 
     //The Isolation Logic
-    int flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | SIGCHLD;
+    int flags = CLONE_NEWPID | CLONE_NEWNS | SIGCHLD; //removed CLONE_NEWNET temporarily
     
     pid_t child_pid = clone(child_entry, stack_top, flags, &child_args);
 

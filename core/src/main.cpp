@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include "../include/sandbox.h"
+#include "../include/parser.h"
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -31,6 +32,11 @@ int main(int argc, char* argv[]) {
         
         std::cout << "[Shadow] Launching " << pkg_manager << " inside sandbox..." << std::endl;
         sandbox.run(pkg_manager, args);
+
+        std::cout << "[Shadow] Sandbox execution completed." << std::endl;
+
+        Parser parser;
+        parser.analyzeLog("shadow_trace.log");
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
