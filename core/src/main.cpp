@@ -31,7 +31,10 @@ int main(int argc, char* argv[]) {
             "--ignore-scripts=false",
             "--no-audit", 
             "--no-fund",
-            "--cache=/tmp/.npm" //Force cache into the RAM disk
+            "--cache=/tmp/.npm", //Force cache into the RAM disk
+            "--loglevel=silly",
+            "--no-progress",//Kills the spinner so we can see logs
+            "--fetch-timeout=5000"
         };
         
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
