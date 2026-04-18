@@ -9,4 +9,5 @@ add_executable(shadow
     core/src/main.cpp
     core/src/sandbox.cpp
     core/src/parser.cpp
+    core/src/observer.cpp
 )
