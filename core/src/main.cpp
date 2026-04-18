@@ -32,6 +32,8 @@ int main(int argc, char* argv[]) {
             "--no-audit", 
             "--no-fund",
             "--cache=/tmp/.npm" //Force cache into the RAM disk
+	        "--fetch-timeout=5000",
+       	    "--loglevel=silly",
         };
         
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
