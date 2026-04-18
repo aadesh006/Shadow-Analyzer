@@ -1,6 +1,7 @@
 #include "../include/observer.h"
 #include "shadow.skel.h"
 #include <bpf/libbpf.h>
+#include <arpa/inet.h>
 #include <iostream>
 
 const std::string COLOR_RESET   = "\033[0m";
@@ -74,9 +75,23 @@ void Observer::stop() {
 
 
 void Observer::poll_events() {
-
+    // Continuously check the ring buffer for new data from the kernel
+    while (running) {
+        ring_buffer__poll(rb, 100);
+    }
 }
 
 int Observer::handle_event(void* ctx, void* data, size_t data_sz) {
+    // Cast the raw kernel memory directly into our C++ struct
+    const struct event_t* e = static_cast<const struct event_t*>(data);
+
+    // Convert the raw integer IP address into a human-readable string
+    struct in_addr ip_addr;
+    ip_addr.s_addr = e->dest_ip;
+
+    std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
+              << " PID: " << e->pid 
+              << " | Target IP: " << inet_ntoa(ip_addr) << std::endl;
+              
     return 0;
 }
