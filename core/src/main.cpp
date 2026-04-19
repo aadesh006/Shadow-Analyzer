@@ -3,6 +3,7 @@
 #include <vector>
 #include "../include/sandbox.h"
 #include "../include/parser.h"
+#include "../include/observer.h"
 
 //ANSI Terminal Colors
 const std::string COLOR_RESET  = "\033[0m";
@@ -21,8 +22,14 @@ int main(int argc, char* argv[]) {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Target: " << target << "\n" << std::endl;
         
+        //Inject the eBPF Probe into the Kernel
+        Observer kernel_observer;
+        if (!kernel_observer.start()) {
+            std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
+            return 1;
+        }
+
         Sandbox sandbox;
-        
         std::string pkg_manager = "npm";
         
         std::vector<std::string> args = {
@@ -42,8 +49,7 @@ int main(int argc, char* argv[]) {
 
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Sandbox execution completed." << std::endl;
 
-        Parser parser;
-        parser.analyzeLog("shadow_trace.log");
+        kernel_observer.stop();
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
