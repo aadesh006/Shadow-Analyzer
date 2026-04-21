@@ -22,3 +22,12 @@ compile_commands.json
 *.swp
 *.swo
 *~
+
+# IDE and OS files
+.vscode/
+.DS_Store
+
+# Generated eBPF Artifacts
+core/src/bpf/shadow.bpf.o
+core/src/bpf/shadow.skel.h
+core/src/bpf/vmlinux.h
