@@ -38,15 +38,9 @@ int main(int argc, char* argv[]) {
             "--ignore-scripts=false",
             "--no-audit", 
             "--no-fund",
-<<<<<<< HEAD
-            "--cache=/tmp/.npm", //Force cache into the RAM disk
-            "--loglevel=silly",
-            "--no-progress",//Kills the spinner so we can see logs
-=======
             "--cache=/tmp/.npm",
             "--loglevel=silly",
             "--no-progress",
->>>>>>> d98c787 (Inject the eBPF Probe into the Kernel)
             "--fetch-timeout=5000"
         };
         
