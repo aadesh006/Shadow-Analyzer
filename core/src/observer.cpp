@@ -1,5 +1,5 @@
 #include "../include/observer.h"
-#include "shadow.skel.h"
+#include "shadow.skel.h" 
 #include <bpf/libbpf.h>
 #include <arpa/inet.h>
 #include <iostream>
@@ -7,6 +7,13 @@
 const std::string COLOR_RESET   = "\033[0m";
 const std::string COLOR_MAGENTA = "\033[1;35m";
 const std::string COLOR_RED     = "\033[1;31m";
+
+struct event_t {
+    uint32_t pid;
+    uint32_t dest_ip;
+    uint16_t dest_port;
+    uint16_t family;
+};
 
 Observer::Observer() : skel(nullptr), rb(nullptr), running(false) {}
 
@@ -82,16 +89,20 @@ void Observer::poll_events() {
 }
 
 int Observer::handle_event(void* ctx, void* data, size_t data_sz) {
-    // Cast the raw kernel memory directly into our C++ struct
     const struct event_t* e = static_cast<const struct event_t*>(data);
 
-    // Convert the raw integer IP address into a human-readable string
-    struct in_addr ip_addr;
-    ip_addr.s_addr = e->dest_ip;
-
-    std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
-              << " PID: " << e->pid 
-              << " | Target IP: " << inet_ntoa(ip_addr) << std::endl;
+    if (e->family == 2) { // IPv4
+        struct in_addr ip_addr;
+        ip_addr.s_addr = e->dest_ip;
+        std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
+                  << " PID: " << e->pid 
+                  << " | IPv4 Target: " << inet_ntoa(ip_addr) << std::endl;
+                  
+    } else if (e->family == 10) { // IPv6
+        std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
+                  << " PID: " << e->pid 
+                  << " | IPv6 Target Detected" << std::endl;
+    }
               
     return 0;
 }
