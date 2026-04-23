@@ -39,8 +39,8 @@ int main(int argc, char* argv[]) {
             "--no-audit", 
             "--no-fund",
             "--cache=/tmp/.npm",
-            "--loglevel=silly",
-            "--no-progress",
+            //"--loglevel=silly",
+            //"--no-progress",
             "--fetch-timeout=5000"
         };
         
