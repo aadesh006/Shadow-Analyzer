@@ -30,7 +30,8 @@ add_custom_target(bpf_skeleton DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/core/src/bpf/
 add_executable(shadow 
     core/src/main.cpp
     core/src/sandbox.cpp
-    core/src/observer.cpp 
+    core/src/observer.cpp
+    core/src/threat_intel.cpp
 )
 
 add_dependencies(shadow bpf_skeleton)
