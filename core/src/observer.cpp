@@ -1,4 +1,5 @@
 #include "../include/observer.h"
+#include "../include/threat_intel.h"
 #include "shadow.skel.h" 
 #include <bpf/libbpf.h>
 #include <arpa/inet.h>
@@ -94,12 +95,22 @@ int Observer::handle_event(void* ctx, void* data, size_t data_sz) {
     if (e->family == 2) { // IPv4
         struct in_addr ip_addr;
         ip_addr.s_addr = e->dest_ip;
-        std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
+        std::string raw_ip = inet_ntoa(ip_addr);
+        
+        std::string hostname = ThreatIntel::resolve_ipv4(raw_ip);
+        
+        bool is_threat = ThreatIntel::is_malicious(hostname);
+        
+        std::string status = is_threat ? (COLOR_RED + "[CRITICAL]" + COLOR_RESET) 
+                                       : (COLOR_MAGENTA + "[SAFE]" + COLOR_RESET);
+
+        std::cout << "  " << status 
                   << " PID: " << e->pid 
-                  << " | IPv4 Target: " << inet_ntoa(ip_addr) << std::endl;
+                  << " | IPv4: " << raw_ip 
+                  << " -> " << hostname << std::endl;
                   
     } else if (e->family == 10) { // IPv6
-        std::cout << "  " << COLOR_MAGENTA << "[KERNEL TRIGGER]" << COLOR_RESET 
+        std::cout << "  " << COLOR_MAGENTA << "[SAFE]" << COLOR_RESET 
                   << " PID: " << e->pid 
                   << " | IPv6 Target Detected" << std::endl;
     }
