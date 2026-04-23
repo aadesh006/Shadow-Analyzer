@@ -1,26 +1,32 @@
 # Shadow
 ### Dependency Runtime Behavior Analyzer
 
-> **Every static analysis tool missed the axios attack. Shadow would have caught it in 2 seconds.**
+> **Every static analysis tool missed the axios attack. Shadow is being built to catch it.**
 
-Shadow is an open-source runtime behavioral sandbox for npm and pip packages. Where existing tools (npm audit, Snyk, Dependabot) rely on static CVE databases, Shadow actually runs the package in an isolated Linux namespace, hooks into the kernel with eBPF, and watches every syscall, network connection, file access, and environment variable read it makes — before your system is touched.
+Shadow is an open-source runtime behavioral sandbox for npm packages. Where existing tools (npm audit, Snyk, Dependabot) rely on static CVE databases, Shadow runs the package inside an isolated Linux namespace, traces every syscall it makes with strace, and simultaneously hooks into the kernel via eBPF to observe network connections — before your system is touched.
 
-```bash
-$ shadow analyze axios@1.14.1
+```
+=== Shadow Analyzer v1.0 ===
+[Shadow] Target: axios@1.14.1
 
-[T+0.3s]  HIGH     Process spawn from postinstall hook → node setup.js
-[T+1.2s]  CRITICAL Outbound network call during install → sfrclak.com:8000
-[T+1.4s]  HIGH     Sensitive env var read → AWS_ACCESS_KEY_ID
-[T+1.5s]  MEDIUM   /proc read → /proc/self/environ
+[Shadow] Spawning isolated namespaces
+[Shadow] Sandbox created. Host mapped PID: 1842
+[eBPF]   Kernel probe attached successfully.
+  [KERNEL TRIGGER] PID: 1842 | IPv4 Target: 185.220.101.47
+[Shadow] Sandbox execution completed.
+[Shadow] --- Starting Heuristic Analysis ---
+  [CRITICAL] Credential harvesting attempt: openat(AT_FDCWD, "/proc/self/environ", ...)
+  [ALERT]    Suspicious shell execution detected: execve("/bin/sh", ...)
+[Shadow] Analysis complete. Processed 312 system calls.
 
-Risk: CRITICAL — Install blocked.
+[RESULT] CRITICAL RISK DETECTED. INSTALLATION BLOCKED.
 ```
 
 ---
 
 ## Why Shadow Exists
 
-On **March 31, 2026**, North Korean threat actor UNC1069 compromised the npm account of the primary axios maintainer and published two malicious versions (`axios@1.14.1`, `axios@0.30.4`) with a RAT dropper injected as a transitive dependency. The malware called home to a C2 server within 2 seconds of `npm install`, harvested credentials and environment variables, then deleted itself — leaving no trace.
+On **March 31, 2026**, a threat actor compromised the npm account of the primary axios maintainer and published two malicious versions (`axios@1.14.1`, `axios@0.30.4`) with a RAT dropper injected as a transitive dependency. The malware called home to a C2 server within 2 seconds of `npm install`, harvested credentials and environment variables, then deleted itself — leaving no trace.
 
 **npm audit reported nothing. Snyk reported nothing. The malicious versions were live for 2 hours 54 minutes.**
 
@@ -32,175 +38,158 @@ Shadow catches this class of attack by observing what a package *actually does a
 | Snyk / Dependabot | Static dependency graph | ❌ Source code was unchanged |
 | GitHub secret scanning | Regex on source files | ❌ Payload was obfuscated |
 | SLSA / provenance | Build attestation | ❌ Token theft bypasses it |
-| **Shadow** | **Runtime syscall observation** | **✅ C2 call flagged in 2 seconds** |
+| **Shadow** | **Runtime syscall observation** | **✅ C2 call and env harvesting detected** |
 
 ---
 
-## Installation
+## Current Status
+
+> ⚠️ **Shadow is in active early development.** The core sandbox and analysis engine are functional. eBPF observation and the strace parser are implemented as two parallel pipelines that are not yet unified into a single risk output.
+
+| Component | Status |
+|---|---|
+| Linux namespace sandbox (PID + MNT) | ✅ Working |
+| `strace`-based syscall tracing | ✅ Working |
+| Heuristic parser (file + exec) | ✅ Working |
+| eBPF network observer (kernel-side) | ✅ Working |
+| Network heuristic risk scoring | 🔧 Detected but not scored yet |
+| eBPF + Parser unified risk output | 🔧 Running in parallel, not integrated |
+| Network namespace isolation (`CLONE_NEWNET`) | 🔧 Disabled (in progress) |
+| cgroup CPU/memory limits | 🔧 Stub only |
+| `diff` / `watch` / `scan` commands | ⏳ Planned |
+| pip / PyPI support | ⏳ Planned |
+| YAML policy rules | ⏳ Planned |
+| GitHub Actions integration | ⏳ Planned |
+
+---
+
+## Building from Source
+
+**Requirements:**
+
+- Linux kernel 5.8+ with BTF enabled (Ubuntu 20.04+, Debian 11+)
+- `clang`, `bpftool`, `libbpf-dev`, `libelf-dev`
+- `strace`
+- CMake 3.10+, C++17 compiler
+- Must run as root (for `clone()` with namespace flags and eBPF loading)
 
 ```bash
-# Debian / Ubuntu
-apt install shadow-analyzer
-
-# macOS
-brew install shadow-analyzer
-
-# npm (cross-platform)
-npm i -g shadow-analyzer
+git clone https://github.com/aadesh006/Shadow-Analyzer
+cd Shadow-Analyzer
+mkdir build && cd build
+cmake ..
+make
 ```
 
-**Requirements:** Linux kernel 5.8+ with BTF enabled (Ubuntu 20.04+, Debian 11+). macOS support via DTrace (experimental).
+The build process:
+1. Compiles `shadow.bpf.c` to eBPF bytecode with clang targeting BPF
+2. Generates the C++ skeleton header via `bpftool gen skeleton`
+3. Compiles and links the C++ host binary against `libbpf`, `libelf`, `libz`
 
 ---
 
 ## Usage
 
-### Analyze a package
-```bash
-shadow analyze <package>@<version>
+### Analyze an npm package
 
-shadow analyze axios@1.14.1
-shadow analyze requests@2.31.0
+```bash
+sudo ./shadow analyze <package>@<version>
+
+sudo ./shadow analyze axios@1.14.1
+sudo ./shadow analyze lodash@4.17.21
 ```
 
-### Diff two versions
-```bash
-shadow diff <package>@<v1> <package>@<v2>
-
-$ shadow diff axios@1.14.0 axios@1.14.1
-
-+ NEW  network_connect  sfrclak.com:8000       [CRITICAL]
-+ NEW  exec             node setup.js          [HIGH]
-+ NEW  env_read         AWS_ACCESS_KEY_ID      [HIGH]
-+ NEW  file_open        /proc/self/environ     [MEDIUM]
-
-Risk delta: CLEAN → CRITICAL
-Recommendation: DO NOT UPGRADE
-```
-
-### Watch mode (real-time monitoring)
-```bash
-shadow watch
-# Monitors all installs in current project in real time
-```
-
-### Scan entire project
-```bash
-shadow scan
-# Analyzes all dependencies from package-lock.json / poetry.lock
-```
-
----
-
-## Risk Levels
-
-| Level | Trigger | Action |
-|---|---|---|
-| **CRITICAL** | C2 network call, credential file access, AWS metadata IP | Block install, immediate alert |
-| **HIGH** | Outbound network during install, shell spawn, env harvesting | Block in CI strict mode |
-| **MEDIUM** | Unexpected file writes, /proc reads | Warn, require approval |
-| **LOW** | Normal reads, writes to tmp | Log only |
-| **CLEAN** | No suspicious behavior | Pass |
-
-Risk is scored on the **worst single event** — one CRITICAL event makes the package CRITICAL regardless of everything else.
+This is the only command currently implemented. `diff`, `watch`, and `scan` are planned for Phase 2.
 
 ---
 
 ## How It Works
 
-Shadow is built in four layers:
+Shadow is built in three active layers:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  User Interface Layer                               │
-│  shadow CLI (Python) | GitHub Action | VS Code Ext  │
-├─────────────────────────────────────────────────────┤
-│  Analysis Engine Layer                              │
-│  Risk Rule Engine | Behavior Classifier | Diff Eng  │
+│  Analysis Layer                                     │
+│  Heuristic Parser (strace log) | eBPF Event Stream  │
 ├─────────────────────────────────────────────────────┤
 │  Observation Layer                                  │
-│  eBPF Programs (C) | Syscall Parser | Net Monitor   │
+│  strace (execve, openat, connect) | eBPF ring buf   │
 ├─────────────────────────────────────────────────────┤
 │  Sandbox Layer                                      │
-│  Linux Namespaces | tmpfs | seccomp | cgroup limits │
+│  Linux Namespaces (PID, MNT) | tmpfs | /proc isol.  │
 └─────────────────────────────────────────────────────┘
 ```
 
-### Sandbox
-Each analysis run creates a fresh Linux namespace with PID, NET, MNT, and USER isolation. The package sees a clean tmpfs filesystem — not your home directory or credentials. A cgroup limits CPU and memory so a malicious package cannot exhaust host resources during analysis.
+### Sandbox (`sandbox.cpp`)
 
-### eBPF Observer
-eBPF programs are loaded into the Linux kernel and attached to syscall entry/exit points before the sandboxed process starts. The package is born already being watched — with no way to detect or disable the observer. Shadow hooks:
+Each analysis run uses `clone()` with `CLONE_NEWPID | CLONE_NEWNS` to create an isolated child process. Inside the namespace:
 
-| Syscall | What's captured |
+- All mounts are made private (`MS_REC | MS_PRIVATE`)
+- A fresh `/proc` is mounted for PID namespace isolation
+- `tmpfs` is mounted over `/tmp` (500MB RAM disk) — the package writes here, not to your real filesystem
+- `HOME` is forced to `/tmp` so npm believes its home directory is the RAM disk
+- `PATH` is restricted to standard system directories
+
+The target package is run via `strace -f -ff -e trace=execve,openat,connect -o shadow_trace.log npm install <package>`, capturing a full syscall trace to disk for the parser.
+
+> **Note:** Network namespace isolation (`CLONE_NEWNET`) is currently disabled while the eBPF network observer is being integrated. Outbound connections are observed but not yet blocked at the network level.
+
+### eBPF Observer (`observer.cpp` + `shadow.bpf.c`)
+
+An eBPF program is compiled to BPF bytecode and loaded into the kernel via libbpf before the sandboxed process starts. It attaches to `tracepoint/syscalls/sys_enter_connect` and intercepts all outbound network connection attempts, writing events to a 256KB ring buffer.
+
+The host-side observer runs a background polling thread that reads from the ring buffer and prints the destination IP and PID for every connection the package attempts — regardless of whether the package tries to hide it.
+
+Currently captures:
+- IPv4 connections: destination IP + port
+- IPv6 connections: destination port (IP extraction pending)
+
+### Heuristic Parser (`parser.cpp`)
+
+After the sandbox completes, the strace log is parsed line-by-line through three heuristic checks:
+
+| Heuristic | What it detects | Risk added |
+|---|---|---|
+| `checkFileHeuristic` | `openat` on `.ssh`, `/proc/self/environ`, `/etc/shadow` | +100 (immediate CRITICAL) |
+| `checkExecutionHeuristic` | `execve` spawning `/bin/sh`, `curl`, or `wget` | +50 |
+| `checkNetworkHeuristic` | `connect` with `AF_INET` — extracts destination IP | Detected, not yet scored |
+
+Risk is evaluated on the **worst accumulated score**:
+
+| Score | Result |
 |---|---|
-| `openat` / `open` | Path, flags, PID, timestamp |
-| `connect` / `sendto` | Destination IP, port, protocol |
-| `execve` / `execveat` | Command, args, parent PID |
-| `getenv` / environ | Variable name |
-| `unlink` / `unlinkat` | Self-deletion patterns |
-| `mount` / `unshare` | Namespace escape attempts |
+| ≥ 100 | `CRITICAL` — install blocked |
+| > 0 | `HIGH` — suspicious behavior found |
+| 0 | `CLEAN` — no suspicious behavior |
+
+> **Known gap:** The network heuristic detects outbound connections but currently does not add to the risk score. This will be fixed in an upcoming commit to unify the eBPF and strace observation paths.
 
 ### Why not Docker?
-Docker adds a PID mapping problem, a ~50ms startup blind spot, and requires a daemon — while still needing the same kernel privileges Shadow requires anyway. Shadow spawns namespaces directly so the eBPF observer loads before the package process exists. See [docs/why-not-docker.md](docs/why-not-docker.md) for the full explanation.
 
-### Risk Rule Engine
-Rules are YAML-defined and community-extensible. Add custom rules in `.shadow/policy.yaml` in your repository:
+Docker adds a daemon dependency and a ~50ms startup blind spot where the package process exists before observation begins. Shadow uses `clone()` directly so the eBPF observer is loaded into the kernel before the child process is ever created — the package is born already being watched, with no startup gap and no daemon requirement.
 
-```yaml
-rules:
-  - name: credential_file_access
-    match: file_open path contains [".aws/credentials", ".ssh/id_rsa"]
-    risk: CRITICAL
-    message: Package attempted to read credential files
+---
 
-  - name: unexpected_outbound_install
-    match: net_connect AND package_phase == install
-    risk: HIGH
-    message: Outbound network call during package install
+## Architecture & File Structure
+
 ```
-
----
-
-## CI/CD Integration
-
-### GitHub Actions
-```yaml
-- name: Shadow dependency scan
-  uses: shadow-analyzer/action@v1
-  with:
-    fail_on: HIGH        # or CRITICAL for less strict mode
-    token: ${{ secrets.GITHUB_TOKEN }}
+shadow-analyzer/
+├── CMakeLists.txt              # Build system (eBPF compile + C++ link)
+└── core/
+    ├── bpf/
+    │   └── shadow.bpf.c        # eBPF kernel program (connect tracepoint)
+    ├── include/
+    │   ├── observer.h          # eBPF loader + ring buffer class
+    │   ├── parser.h            # strace log analyzer class
+    │   └── sandbox.h           # Linux namespace sandbox class
+    └── src/
+        ├── main.cpp            # CLI entry point (analyze command)
+        ├── observer.cpp        # libbpf skeleton loader, background poll thread
+        ├── parser.cpp          # Heuristic analysis of strace log
+        ├── sandbox.cpp         # clone(), namespace setup, strace wrapping
+        └── bpf/
+            └── shadow.bpf.c    # (build output location for eBPF bytecode)
 ```
-
-Automatically scans on `package.json` / `requirements.txt` changes. Posts a risk report as a PR comment. Blocks merge on HIGH or CRITICAL findings.
-
-### Policy as Code
-Commit `.shadow/policy.yaml` to your repository for custom rules, org-wide risk thresholds, and package allowlisting. Works with `shadow scan` across monorepos.
-
----
-
-## Project Status
-
-> ⚠️ **Shadow is currently in active development.** Phase 1 (core engine) is in progress. The CLI and sandbox are functional. eBPF observer upgrade and full distribution packaging are in progress.
-
-| Phase | Scope | Status |
-|---|---|---|
-| Phase 1 (Weeks 1–6) | Core engine, CLI, apt/brew/npm distribution | In progress |
-| Phase 2 (Weeks 7–12) | GitHub Action, process lineage graph, container seccomp generator | Planned |
-| Phase 3 (Weeks 13–20) | shadow.run registry, VS Code extension, team dashboard | Planned |
-
----
-
-## Test Suite
-
-Shadow is validated against 25+ known malicious packages including:
-
-- `axios@1.14.1` — March 2026 supply chain attack, RAT dropper, C2 call
-- `event-stream@3.3.6` — 2018 bitcoin theft via transitive dep
-- `ua-parser-js@0.7.29` — 2021 cryptominer + credential stealer
-- `plain-crypto-js@4.2.1` — decoy package used in axios attack
-- `colors@1.4.0` — 2022 protestware infinite loop
 
 ---
 
@@ -208,47 +197,61 @@ Shadow is validated against 25+ known malicious packages including:
 
 | Component | Technology |
 |---|---|
-| Sandbox orchestrator | C++ |
+| Sandbox orchestrator | C++ 17 |
 | eBPF kernel programs | C (clang + BPF backend) |
-| CLI | Python |
-| Risk rule engine | C++ + YAML |
-| GitHub Action | TypeScript |
-| VS Code extension | TypeScript |
-| Public registry (shadow.run) | FastAPI + PostgreSQL |
-| Local cache | SQLite |
-| eBPF loader | libbpf |
-| macOS observation | DTrace |
+| eBPF loader | libbpf (skeleton API) |
+| Syscall tracing | strace |
+| Build system | CMake |
 
 ---
 
 ## Known Limitations
 
+- **Root required.** `clone()` with namespace flags and eBPF loading both require root. Rootless support is on the roadmap.
 - **Linux kernel 5.8+ required** for eBPF/BTF. Ubuntu 18.04 and earlier are not supported.
-- **macOS support is experimental.** DTrace on macOS with SIP enabled has restricted cross-process visibility. Feature parity with Linux is not guaranteed.
-- **Windows is not natively supported.** WSL2 works for local use but not for Windows-hosted CI runners.
-- **Staged / time-delayed payloads** that behave cleanly during a short analysis window will not be caught by a single-pass analysis. Multi-pass analysis is on the roadmap.
-- **Sandbox environment detection** by highly sophisticated malware (timing analysis, namespace ID inspection) is a known attack vector. Shadow's eBPF invisibility addresses the most common detection method (TracerPid) but is not a complete mitigation against nation-state-grade evasion.
+- **npm only.** pip/PyPI support is planned for Phase 2.
+- **Network isolation is disabled.** `CLONE_NEWNET` is commented out while the eBPF observer is being integrated. The sandbox does not currently block outbound connections.
+- **eBPF and strace outputs are parallel, not unified.** Both observe behavior independently; they are not yet feeding into a single risk engine.
+- **Network risk not scored.** Outbound connections are detected and printed by both observers but do not currently contribute to the risk score that determines install blocking.
+- **Staged payloads** that behave cleanly during a short analysis window will not be caught.
+- **macOS is not supported.** DTrace support is planned but not implemented.
+- **Windows is not supported.** WSL2 may work for local use.
+
+---
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| Phase 1 (Weeks 1–6) | Core sandbox, eBPF observer, strace parser, unified risk engine, `analyze` CLI | **In progress** |
+| Phase 2 (Weeks 7–12) | `diff` / `watch` / `scan` commands, pip support, GitHub Action, process lineage graph | Planned |
+| Phase 3 (Weeks 13–20) | YAML policy rules, shadow.run registry, VS Code extension, team dashboard | Planned |
+
+**Immediate next steps:**
+- Integrate eBPF network events into the risk scoring engine
+- Re-enable `CLONE_NEWNET` and connect it to the eBPF observer for actual network blocking
+- Call `parser.analyzeLog()` from `main.cpp` after sandbox completes
+- Add `shadow diff` to compare behavior between two package versions
 
 ---
 
 ## Contributing
 
-Rule contributions are especially welcome. If you encounter a false positive or have a rule for a known malicious behavior pattern, open a PR against `rules/`.
+Rule and heuristic contributions are especially welcome.
 
 ```bash
 git clone https://github.com/aadesh006/Shadow-Analyzer
 cd Shadow-Analyzer
-make dev       # builds core + CLI in dev mode
-make test      # runs test suite against known malicious packages
+mkdir build && cd build
+cmake .. && make
 ```
 
 ---
 
 ## Background
 
-Shadow was built in response to the axios npm supply chain attack (March 2026). StepSecurity Harden-Runner — the only tool that caught the attack — is an enterprise-grade GitHub Actions product requiring organizational sign-up and significant cost for private repositories. There was no open-source, developer-local equivalent. Shadow fills that gap.
+Shadow was built in response to the axios npm supply chain attack (March 2026). StepSecurity Harden-Runner — the only tool that caught the attack — is an enterprise-grade GitHub Actions product. There was no open-source, developer-local equivalent. Shadow fills that gap.
 
 ---
 
-*Shadow — shadow-analyzer.run | github.com/shadow-analyzer*
 *Built in response to the axios npm supply chain attack, March 2026*
