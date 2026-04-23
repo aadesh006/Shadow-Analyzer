@@ -35,6 +35,16 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     if (family == 2) {
         struct sockaddr_in addr;
         bpf_probe_read_user(&addr, sizeof(addr), uservaddr);
+        
+        u8 first_byte = addr.sin_addr.s_addr & 0xFF;
+        
+        // Drop Loopback (127.x.x.x) and Local NAT (10.x.x.x)
+        if (first_byte == 127 || first_byte == 10) {
+            //Explicitly free the memory to satisfy the Verifier
+            bpf_ringbuf_discard(e, 0); 
+            return 0;
+        }
+
         e->dest_ip = addr.sin_addr.s_addr;
         e->dest_port = addr.sin_port;
     } else {
