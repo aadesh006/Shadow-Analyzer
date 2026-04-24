@@ -10,10 +10,12 @@ const std::string COLOR_MAGENTA = "\033[1;35m";
 const std::string COLOR_RED     = "\033[1;31m";
 
 struct event_t {
+    uint8_t type; 
     uint32_t pid;
     uint32_t dest_ip;
     uint16_t dest_port;
-    uint16_t family;
+    uint16_t family; 
+    char filename[256];
 };
 
 Observer::Observer() : skel(nullptr), rb(nullptr), running(false) {}
@@ -92,27 +94,43 @@ void Observer::poll_events() {
 int Observer::handle_event(void* ctx, void* data, size_t data_sz) {
     const struct event_t* e = static_cast<const struct event_t*>(data);
 
-    if (e->family == 2) { // IPv4
-        struct in_addr ip_addr;
-        ip_addr.s_addr = e->dest_ip;
-        std::string raw_ip = inet_ntoa(ip_addr);
-        
-        std::string hostname = ThreatIntel::resolve_ipv4(raw_ip);
-        
-        bool is_threat = ThreatIntel::is_malicious(hostname);
-        
-        std::string status = is_threat ? (COLOR_RED + "[CRITICAL]" + COLOR_RESET) 
-                                       : (COLOR_MAGENTA + "[SAFE]" + COLOR_RESET);
+    //DEMULTIPLEXER
+    if (e->type == 1) { 
+        //EVENT: NETWORK
+        if (e->family == 2) { 
+            struct in_addr ip_addr;
+            ip_addr.s_addr = e->dest_ip;
+            std::string raw_ip = inet_ntoa(ip_addr);
+            std::string hostname = ThreatIntel::resolve_ipv4(raw_ip);
+            bool is_threat = ThreatIntel::is_malicious(hostname);
+            
+            std::string status = is_threat ? (COLOR_RED + "[CRITICAL]" + COLOR_RESET) 
+                                           : (COLOR_MAGENTA + "[NET SAFE]" + COLOR_RESET);
 
-        std::cout << "  " << status 
-                  << " PID: " << e->pid 
-                  << " | IPv4: " << raw_ip 
-                  << " -> " << hostname << std::endl;
-                  
-    } else if (e->family == 10) { // IPv6
-        std::cout << "  " << COLOR_MAGENTA << "[SAFE]" << COLOR_RESET 
-                  << " PID: " << e->pid 
-                  << " | IPv6 Target Detected" << std::endl;
+            std::cout << "  " << status 
+                      << " PID: " << e->pid 
+                      << " | IPv4: " << raw_ip 
+                      << " -> " << hostname << std::endl;
+        }
+    } 
+    else if (e->type == 2) { 
+        //EVENT: FILE SYSTEM
+        std::string filepath(e->filename);
+        
+        // MOCK THREAT MATRIX: Sensitive Host Files
+        bool is_sensitive = false;
+        if (filepath.find("/etc/passwd") != std::string::npos ||
+            filepath.find(".aws/credentials") != std::string::npos ||
+            filepath.find(".ssh/id_rsa") != std::string::npos ||
+            filepath.find(".env") != std::string::npos) {
+            is_sensitive = true;
+        }
+
+        if (is_sensitive) {
+            std::cout << "  " << COLOR_RED << "[FILE THEFT]" << COLOR_RESET 
+                      << " PID: " << e->pid 
+                      << " | Illicit read blocked: " << filepath << std::endl;
+        }
     }
               
     return 0;
