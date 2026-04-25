@@ -10,14 +10,15 @@ const std::string COLOR_RESET = "\033[0m";
 const std::string COLOR_MAGENTA = "\033[1;35m";
 const std::string COLOR_RED = "\033[1;31m";
 
-struct event_t
-{
-    uint8_t type;
+struct event_t {
+    uint8_t type; 
     uint32_t pid;
+    uint32_t ppid;
     uint32_t dest_ip;
     uint16_t dest_port;
-    uint16_t family;
+    uint16_t family; 
     char filename[256];
+    char comm[16];
 };
 
 Observer::Observer() : skel(nullptr), rb(nullptr), running(false) {}
@@ -161,6 +162,17 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz)
                 std::cout << "  " << COLOR_RED << "[ERROR]" << COLOR_RESET
                           << " Failed to kill PID: " << e->pid << std::endl;
             }
+        }
+    }
+    else if (e->type == 3) { 
+        //EVENT: EXECUTION TREE
+        std::string parent_name(e->comm);
+        std::string target_binary(e->filename);
+        
+        if (target_binary != "/usr/bin/node" && target_binary != "/usr/bin/npm") {
+            std::cout << "  " << COLOR_MAGENTA << "[PROCESS TREE]" << COLOR_RESET 
+                      << " PPID: " << e->ppid << " (" << parent_name << ") "
+                      << "==> Spawned PID: " << e->pid << " (" << target_binary << ")" << std::endl;
         }
     }
 
