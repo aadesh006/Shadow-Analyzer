@@ -253,5 +253,9 @@ cmake .. && make
 Shadow was built in response to the axios npm supply chain attack (March 2026). StepSecurity Harden-Runner — the only tool that caught the attack — is an enterprise-grade GitHub Actions product. There was no open-source, developer-local equivalent. Shadow fills that gap.
 
 ---
+## Author
+
+**Aadesh Chaudhari**  
+GitHub: [@aadesh006](https://github.com/aadesh006)
 
 *Built in response to the axios npm supply chain attack, March 2026*
