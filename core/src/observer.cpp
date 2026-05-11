@@ -137,7 +137,7 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz)
         if (filename.find("passwd") != std::string::npos || 
             filename.find("id_rsa") != std::string::npos) {
             
-            std::cout << "  " << COLOR_RED << "[LSM BLOCK NATIVE]" << COLOR_RESET 
+            std::cout << "  \033[31m[LSM BLOCK NATIVE]\033[0m" 
                       << " PID: " << e->pid 
                       << " | Kernel actively denied access to: " << filename 
                       << " (0ms latency)" << std::endl;

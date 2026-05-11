@@ -30,7 +30,7 @@ SEC("tracepoint/syscalls/sys_enter_execve")
 int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     
-    // CO-RE Magic: Dig into the kernel task structure to find the Parent PID
+
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
 
@@ -63,7 +63,7 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
-//THE NEW LSM FILE HOOK (Ring 0 Blocking)
+//THE LSM FILE HOOK (Ring 0 Blocking)
 SEC("lsm/file_open")
 int BPF_PROG(restrict_files, struct file *file) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -93,13 +93,13 @@ int BPF_PROG(restrict_files, struct file *file) {
         block_execution = 1;
     }
 
-    bpf_ringbuf_submit(e, 0);
-
     if (block_execution) {
+        bpf_ringbuf_submit(e, 0);
         return -EPERM; 
+    } else {
+        bpf_ringbuf_discard(e, 0);
+        return 0; // Allow access
     }
-
-    return 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";

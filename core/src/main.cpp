@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 #include "../include/sandbox.h"
 #include "../include/parser.h"
 #include "../include/observer.h"
@@ -48,6 +49,8 @@ int main(int argc, char* argv[]) {
         sandbox.run(pkg_manager, args);
 
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Sandbox execution completed." << std::endl;
+        std::cout << "[Shadow] Keeping ring buffer open to catch background orphans..." << std::endl;
+        sleep(2);
 
         kernel_observer.stop();
 
