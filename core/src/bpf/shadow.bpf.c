@@ -71,35 +71,36 @@ int BPF_PROG(restrict_files, struct file *file) {
     struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
     const unsigned char *filename = BPF_CORE_READ(dentry, d_name.name);
 
-    struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-    if (!e) return 0;
+    char local_name[64] = {0}; 
+    bpf_probe_read_kernel_str(&local_name, sizeof(local_name), filename);
 
-    e->type = EVENT_TYPE_FILE;
-    e->pid = pid;
-    
-    bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), filename);
-
+    //Evaluate the threat locally
     int block_execution = 0;
     
-    if (e->filename[0] == 'p' && e->filename[1] == 'a' && 
-        e->filename[2] == 's' && e->filename[3] == 's' && 
-        e->filename[4] == 'w' && e->filename[5] == 'd') {
+    if (local_name[0] == 'p' && local_name[1] == 'a' && 
+        local_name[2] == 's' && local_name[3] == 's' && 
+        local_name[4] == 'w' && local_name[5] == 'd') {
         block_execution = 1;
     }
 
-    if (e->filename[0] == 'i' && e->filename[1] == 'd' && 
-        e->filename[2] == '_' && e->filename[3] == 'r' && 
-        e->filename[4] == 's' && e->filename[5] == 'a') {
+    if (local_name[0] == 'i' && local_name[1] == 'd' && 
+        local_name[2] == '_' && local_name[3] == 'r' && 
+        local_name[4] == 's' && local_name[5] == 'a') {
         block_execution = 1;
     }
 
     if (block_execution) {
-        bpf_ringbuf_submit(e, 0);
-        return -EPERM; 
-    } else {
-        bpf_ringbuf_discard(e, 0);
-        return 0; // Allow access
+        struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (e) {
+            e->type = 2; // EVENT_TYPE_FILE
+            e->pid = pid;
+            __builtin_memcpy(e->filename, local_name, sizeof(local_name));
+            bpf_ringbuf_submit(e, 0);
+        }
+        return -EPERM;
     }
+
+    return 0; 
 }
 
 char LICENSE[] SEC("license") = "GPL";
