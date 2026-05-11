@@ -154,6 +154,18 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz)
                       << "==> Spawned PID: " << e->pid << " (" << target_binary << ")" << std::endl;
         }
     }
+    else if (e->type == 0) { 
+        // EVENT: EXECUTION TREE (Matched to Kernel type 0)
+        std::string target_binary(e->filename);
+        
+        if (target_binary != "/usr/bin/node" && target_binary != "/usr/bin/npm") {
+        
+            std::cout << "  " << COLOR_MAGENTA << "[PROCESS TREE]" << COLOR_RESET 
+                      << " PPID: " << e->ppid 
+                      << " ==> Spawned PID: " << e->pid 
+                      << " (" << target_binary << ")" << std::endl;
+        }
+    }
 
     return 0;
 }
