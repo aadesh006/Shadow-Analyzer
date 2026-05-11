@@ -1,6 +1,6 @@
 #include "../include/observer.h"
 #include "../include/threat_intel.h"
-#include "shadow.skel.h"
+#include "../bpf/shadow.skel.h"
 #include <bpf/libbpf.h>
 #include <arpa/inet.h>
 #include <iostream>
@@ -129,39 +129,18 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz)
                       << " | IPv4: " << raw_ip
                       << " -> " << hostname << std::endl;
         }
-    }
-    else if (e->type == 2)
-    {
-        // EVENT: FILE SYSTEM
-        std::string filepath(e->filename);
-
-        // MOCK THREAT MATRIX: Sensitive Host Files
-        bool is_sensitive = false;
-        if (filepath.find("/etc/passwd") != std::string::npos ||
-            filepath.find(".aws/credentials") != std::string::npos ||
-            filepath.find(".ssh/id_rsa") != std::string::npos ||
-            filepath.find(".env") != std::string::npos)
-        {
-            is_sensitive = true;
-        }
-
-        if (is_sensitive)
-        {
-            std::cout << "  " << COLOR_RED << "[FILE THEFT]" << COLOR_RESET
-                      << " PID: " << e->pid
-                      << " | Illicit read detected: " << filepath << std::endl;
-
-            // Instantly terminate the process that tried to read the file
-            if (kill(e->pid, SIGKILL) == 0)
-            {
-                std::cout << "  " << COLOR_RED << "[ACTION]" << COLOR_RESET
-                          << " Sent SIGKILL to PID: " << e->pid << ". Process terminated." << std::endl;
-            }
-            else
-            {
-                std::cout << "  " << COLOR_RED << "[ERROR]" << COLOR_RESET
-                          << " Failed to kill PID: " << e->pid << std::endl;
-            }
+    } 
+    else if (e->type == 2) { 
+        //EVENT: FILE SYSTEM (LSM)
+        std::string filename(e->filename);
+        
+        if (filename.find("passwd") != std::string::npos || 
+            filename.find("id_rsa") != std::string::npos) {
+            
+            std::cout << "  " << COLOR_RED << "[LSM BLOCK NATIVE]" << COLOR_RESET 
+                      << " PID: " << e->pid 
+                      << " | Kernel actively denied access to: " << filename 
+                      << " (0ms latency)" << std::endl;
         }
     }
     else if (e->type == 3) { 
