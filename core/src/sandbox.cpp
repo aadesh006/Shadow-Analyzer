@@ -6,9 +6,16 @@
 #include <cstring>
 #include <vector>
 #include <sys/mount.h>
+#include <sys/syscall.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 // Allocate 1MB for the child process stack
 const int STACK_SIZE = 1024 * 1024; 
+
+bool construct_prison();
+void setup_user_mapping();
 
 // A struct to pass arguments from the parent to the sandboxed child
 struct ChildArgs {
@@ -22,9 +29,36 @@ Sandbox::Sandbox() {
 
 Sandbox::~Sandbox() {}
 
+void setup_user_mapping() {
+    int fd = open("/proc/self/uid_map", O_WRONLY);
+    if (fd != -1) {
+        write(fd, "0 0 1\n", 6);
+        close(fd);
+    }
+    
+    int fd_setgroups = open("/proc/self/setgroups", O_WRONLY);
+    if (fd_setgroups != -1) {
+        write(fd_setgroups, "deny", 4);
+        close(fd_setgroups);
+    }
+
+    int fd_gid = open("/proc/self/gid_map", O_WRONLY);
+    if (fd_gid != -1) {
+        write(fd_gid, "0 0 1\n", 6);
+        close(fd_gid);
+    }
+}
+
 //RUNS INSIDE THE SANDBOX
 int Sandbox::child_entry(void* arg) {
     ChildArgs* args = static_cast<ChildArgs*>(arg);
+
+    std::cout << "  [Prison] Constructing pivot_root filesystem isolation..." << std::endl;
+    if (!construct_prison()) {
+        std::cerr << "  [Prison] FATAL: Failed to construct isolation. Aborting." << std::endl;
+        return -1; // Never execute malware if the cage is broken!
+    }
+    std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
     
     std::cout << "[Sandbox] Child process alive. Internal PID: " << getpid() << std::endl;
     
@@ -92,7 +126,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     std::cout << "[Shadow] Spawning isolated namespaces" << std::endl;
 
     //The Isolation Logic
-    int flags = CLONE_NEWPID | CLONE_NEWNS | SIGCHLD; //removed CLONE_NEWNET temporarily
+    int flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER; //removed CLONE_NEWNET temporarily
     
     pid_t child_pid = clone(child_entry, stack_top, flags, &child_args);
 
@@ -112,4 +146,42 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
 
     delete[] stack;
     return WEXITSTATUS(status);
+}
+
+bool construct_prison() {
+
+    if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+        std::cerr << "[Sandbox] Failed to make mounts private." << std::endl;
+        return false;
+    }
+
+    //Create a temporary staging ground for the fake filesystem
+    const char* jail_dir = "/tmp/shadow_jail";
+    mkdir(jail_dir, 0777);
+
+    if (mount(jail_dir, jail_dir, "bind", MS_BIND | MS_REC, NULL) == -1) {
+        std::cerr << "[Sandbox] Failed to bind mount jail." << std::endl;
+        return false;
+    }
+
+    const char* put_old = "/tmp/shadow_jail/old_root";
+    mkdir(put_old, 0777);
+
+    if (syscall(SYS_pivot_root, jail_dir, put_old) == -1) {
+        std::cerr << "[Sandbox] pivot_root failed!" << std::endl;
+        return false;
+    }
+
+    chdir("/");
+
+    // the host OS so the malware cannot access it
+    if (umount2("/old_root", MNT_DETACH) == -1) {
+        std::cerr << "[Sandbox] Failed to unmount host OS." << std::endl;
+        return false;
+    }
+
+    // Delete the now-empty staging folder
+    rmdir("/old_root");
+
+    return true;
 }
