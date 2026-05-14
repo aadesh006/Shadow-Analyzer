@@ -149,24 +149,49 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
 }
 
 bool construct_prison() {
-
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
         std::cerr << "[Sandbox] Failed to make mounts private." << std::endl;
         return false;
     }
 
-    //Create a temporary staging ground for the fake filesystem
     const char* jail_dir = "/tmp/shadow_jail";
     mkdir(jail_dir, 0777);
-
     if (mount(jail_dir, jail_dir, "bind", MS_BIND | MS_REC, NULL) == -1) {
         std::cerr << "[Sandbox] Failed to bind mount jail." << std::endl;
         return false;
     }
 
+    // Create the physical directories before mounting to them
+    std::vector<std::string> sys_dirs = {
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", 
+        "/etc", "/dev", "/proc", "/tmp", "/home"
+    };
+    
+    for (const auto& dir : sys_dirs) {
+        std::string target = std::string(jail_dir) + dir;
+        mkdir(target.c_str(), 0755);
+    }
+
+    // Port the host OS tools into the jail, but strictly read-only
+    std::vector<std::string> ro_binds = {
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev"
+    };
+    
+    for (const auto& dir : ro_binds) {
+        std::string target = std::string(jail_dir) + dir;
+        mount(dir.c_str(), target.c_str(), "bind", MS_BIND | MS_REC, NULL);
+        // Lock the door: Remount strictly as Read-Only
+        mount(dir.c_str(), target.c_str(), "bind", MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+    }
+
+    // NPM needs to access /home/aadesh/Desktop/dummy_pkg
+    std::string home_target = std::string(jail_dir) + "/home";
+    mount("/home", home_target.c_str(), "bind", MS_BIND | MS_REC, NULL);
+
+    // --- 4. THE PIVOT (Locking the Door) ---
     const char* put_old = "/tmp/shadow_jail/old_root";
     mkdir(put_old, 0777);
-
+    
     if (syscall(SYS_pivot_root, jail_dir, put_old) == -1) {
         std::cerr << "[Sandbox] pivot_root failed!" << std::endl;
         return false;
@@ -174,13 +199,10 @@ bool construct_prison() {
 
     chdir("/");
 
-    // the host OS so the malware cannot access it
     if (umount2("/old_root", MNT_DETACH) == -1) {
         std::cerr << "[Sandbox] Failed to unmount host OS." << std::endl;
         return false;
     }
-
-    // Delete the now-empty staging folder
     rmdir("/old_root");
 
     return true;
