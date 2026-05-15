@@ -3,13 +3,20 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#define AF_INET   2
+#define AF_INET6  10
+
 #define EPERM 1
 
 struct event_t {
     u32 type;
     u32 pid;
     u32 ppid;
+    u32 family;     // AF_INET=2, AF_INET6=10
+    u32 dest_ip;
+    u16 dest_port;
     char filename[256];
+    char comm[16];
 };
 
 struct {
@@ -21,22 +28,20 @@ struct {
 //THE EXECVE HOOK (Process Tree)
 SEC("tracepoint/syscalls/sys_enter_execve")
 int trace_execve(struct trace_event_raw_sys_enter *ctx) {
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    u32 pid  = bpf_get_current_pid_tgid() >> 32;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
 
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->type = 0; // EVENT_TYPE_EXEC
-    e->pid = pid;
+    e->type = 3;
+    e->pid  = pid;
     e->ppid = ppid;
-    
+
     const char *prog_name = (const char *)ctx->args[0];
     bpf_probe_read_user_str(&e->filename, sizeof(e->filename), prog_name);
-
-    //DEBUGGER
-    bpf_printk("[SHADOW-EXEC] Spawning PID: %d\n", pid);
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -48,18 +53,35 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
 SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    // Read the sockaddr struct from userspace
+    struct sockaddr sa;
+    void* uaddr = (void*)ctx->args[1];
+    if (bpf_probe_read_user(&sa, sizeof(sa), uaddr) != 0)
+        return 0;
+
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->type = 1; // EVENT_TYPE_NETWORK
-    e->pid = pid;
+    e->type   = 1;
+    e->pid    = pid;
+    e->family = sa.sa_family;
+
+    if (sa.sa_family == AF_INET) {
+        struct sockaddr_in sa4;
+        if (bpf_probe_read_user(&sa4, sizeof(sa4), uaddr) == 0) {
+            e->dest_ip   = sa4.sin_addr.s_addr;
+            e->dest_port = __builtin_bswap16(sa4.sin_port);
+        }
+    }
+
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
 
 
 //HE X-RAY BEHAVIORAL LSM HOOK
-
 SEC("lsm/file_open")
 int BPF_PROG(restrict_files, struct file *file) {
     char comm[16];
