@@ -46,7 +46,12 @@ bool construct_prison() {
     }
 
     std::string home_target = std::string(jail_dir) + "/home";
-    mount("/home", home_target.c_str(), "bind", MS_BIND | MS_REC, NULL);
+
+    if (access("/home", F_OK) == 0) {
+        mount("/home", home_target.c_str(), "bind", MS_BIND | MS_REC, NULL);
+        mount("/home", home_target.c_str(), "bind", 
+          MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+    }
 
     std::string proc_target = std::string(jail_dir) + "/proc";
     mount("proc", proc_target.c_str(), "proc", 0, NULL);
