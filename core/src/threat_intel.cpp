@@ -16,7 +16,13 @@ std::string ThreatIntel::resolve_ipv4(const std::string& ip_str) {
 }
 
 bool ThreatIntel::is_malicious(const std::string& hostname) {
-    if (hostname.find("evil.com") != std::string::npos) return true;
-    if (hostname.find("pastebin.com") != std::string::npos) return true;
+    std::vector<std::string> malicious_domains = {
+        "evil.com", "pastebin.com", "ngrok.io", "localtunnel.me", 
+        "requestbin.net", "burpcollaborator.net", "interact.sh"
+    };
+
+    for (const auto& domain : malicious_domains) {
+        if (hostname.find(domain) != std::string::npos) return true;
+    }
     return false;
 }
