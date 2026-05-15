@@ -30,13 +30,20 @@ bool construct_prison() {
     mkdir(jail_dir, 0777);
     if (mount(jail_dir, jail_dir, "bind", MS_BIND | MS_REC, NULL) == -1) return false;
 
-    std::vector<std::string> sys_dirs = {"/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/tmp", "/home"};
+
+    std::vector<std::string> sys_dirs = {
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/tmp", "/home", "/run" 
+    };
+
     for (const auto& dir : sys_dirs) {
         std::string target = std::string(jail_dir) + dir;
         mkdir(target.c_str(), 0755);
     }
 
-    std::vector<std::string> ro_binds = {"/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev"};
+    std::vector<std::string> ro_binds = {
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/run"
+    };
+    
     for (const auto& dir : ro_binds) {
         std::string target = std::string(jail_dir) + dir;
         if (access(dir.c_str(), F_OK) == 0) { 

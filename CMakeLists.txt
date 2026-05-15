@@ -26,11 +26,12 @@ add_custom_command(
 #Custom target barrier
 add_custom_target(bpf_skeleton DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/core/src/bpf/shadow.skel.h)
 
-#Main executable (Observer removed for now)
+#Main executable
 add_executable(shadow 
     core/src/main.cpp
     core/src/sandbox.cpp
     core/src/observer.cpp
+    core/src/parser.cpp
     core/src/threat_intel.cpp
 )
 
