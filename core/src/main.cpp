@@ -48,12 +48,11 @@ int main(int argc, char* argv[]) {
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
         sandbox.run(pkg_manager, args);
 
-        std::cout << "[Shadow] Sandbox execution completed." << std::endl;
         std::cout << "[Shadow] Sweeping ring buffer for final logs..." << std::endl;
         sleep(2); 
 
         kernel_observer.stop(); 
-        std::cout << "[eBPF] Kernel probe detached." << std::endl;
+
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
