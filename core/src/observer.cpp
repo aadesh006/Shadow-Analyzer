@@ -5,6 +5,9 @@
 #include <arpa/inet.h>
 #include <iostream>
 #include <signal.h>
+#include <fstream>
+#include <bpf/bpf.h>
+#include "../include/sandbox.h"
 
 const std::string COLOR_RESET = "\033[0m";
 const std::string COLOR_MAGENTA = "\033[1;35m";
@@ -28,8 +31,49 @@ Observer::~Observer()
     stop();
 }
 
+struct path_key {
+    char name[64];
+};
+
+// 2. ADD THE INJECTION FUNCTION
+void inject_dynamic_rules(struct shadow_bpf *skel) {
+    std::cout << "[Shadow] Loading dynamic threat intelligence..." << std::endl;
+
+    std::ifstream infile("../shadow_rules.conf"); 
+    if (!infile.is_open()) {
+        std::cerr << "[Shadow] Warning: Could not open shadow_rules.conf" << std::endl;
+        return;
+    }
+
+    int map_fd = bpf_map__fd(skel->maps.blocklist);
+    std::string line;
+    int rule_count = 0;
+
+    while (std::getline(infile, line)) {
+        if (line.empty()) continue;
+
+        struct path_key key = {};
+        strncpy(key.name, line.c_str(), sizeof(key.name) - 1);
+        uint32_t value = 1; 
+
+        int err = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
+        if (err == 0) {
+            std::cout << "  -> Injected LSM Block Rule: " << key.name << std::endl;
+            rule_count++;
+        }
+    }
+    std::cout << "[Shadow] Successfully injected " << rule_count << " dynamic rules into Ring 0." << std::endl;
+}
+
 bool Observer::start()
 {
+    skel = shadow_bpf__open_and_load();
+    if (!skel) return false;
+
+    int err = shadow_bpf__attach(skel);
+    if (err) return false;
+
+    inject_dynamic_rules(skel);
 
     skel = shadow_bpf__open();
     if (!skel)
@@ -133,6 +177,9 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz)
     else if (e->type == 2) { 
         //EVENT: FILE SYSTEM (LSM)
         std::string filename(e->filename);
+        std::cout << "\033[1;31m[LSM THREAT BLOCKED] " 
+              << "Malware (PID " << e->pid << ") attempted to read restricted file: " 
+              << e->filename << "\033[0m" << std::endl;
         
         if (filename.find("passwd") != std::string::npos || 
             filename.find("id_rsa") != std::string::npos) {

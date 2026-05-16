@@ -3,20 +3,16 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#define AF_INET   2
-#define AF_INET6  10
-
 #define EPERM 1
 
+char LICENSE[] SEC("license") = "GPL";
+
+// The exact same struct your C++ code expects
 struct event_t {
     u32 type;
     u32 pid;
     u32 ppid;
-    u32 family;     // AF_INET=2, AF_INET6=10
-    u32 dest_ip;
-    u16 dest_port;
     char filename[256];
-    char comm[16];
 };
 
 struct {
@@ -24,110 +20,71 @@ struct {
     __uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
+// --- NEW: THE DYNAMIC BLOCKLIST MAP ---
+// We use a fixed-size char array as the key so strings match perfectly.
+struct path_key {
+    char name[64];
+};
 
-//THE EXECVE HOOK (Process Tree)
-SEC("tracepoint/syscalls/sys_enter_execve")
-int trace_execve(struct trace_event_raw_sys_enter *ctx) {
-    u32 pid  = bpf_get_current_pid_tgid() >> 32;
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct path_key); // The filename (e.g., "passwd", "credentials")
+    __type(value, u32);           // 1 = Block, 0 = Allow
+} blocklist SEC(".maps");
 
-    struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+
+// --- 1. PROCESS TRACKING (EXECVE) ---
+SEC("tp/syscalls/sys_enter_execve")
+int handle_execve(struct trace_event_raw_sys_enter *ctx) {
+    struct event_t *e;
+    e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->type = 3;
-    e->pid  = pid;
-    e->ppid = ppid;
-
-    const char *prog_name = (const char *)ctx->args[0];
-    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), prog_name);
-    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    e->type = 1; // 1 = Process execution
+    e->pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    e->ppid = BPF_CORE_READ(task, real_parent, tgid);
+    
+    const char *filename_ptr = (const char *)ctx->args[0];
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
 
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
 
 
-//THE NETWORK HOOK
-
-SEC("tracepoint/syscalls/sys_enter_connect")
-int trace_connect(struct trace_event_raw_sys_enter *ctx) {
+// --- 2. DYNAMIC LSM BLOCKING ---
+SEC("lsm/file_open")
+int BPF_PROG(shadow_file_open, struct file *file) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     
-    // Read the sockaddr struct from userspace
-    struct sockaddr sa;
-    void* uaddr = (void*)ctx->args[1];
-    if (bpf_probe_read_user(&sa, sizeof(sa), uaddr) != 0)
-        return 0;
+    // Ignore the host OS (our engine and root processes). Only watch the Sandbox.
+    if (pid < 1000) return 0; 
 
-    struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-    if (!e) return 0;
+    // Extract the name of the file being opened
+    struct path_key key = {};
+    bpf_probe_read_kernel_str(&key.name, sizeof(key.name), file->f_path.dentry->d_name.name);
 
-    e->type   = 1;
-    e->pid    = pid;
-    e->family = sa.sa_family;
-
-    if (sa.sa_family == AF_INET) {
-        struct sockaddr_in sa4;
-        if (bpf_probe_read_user(&sa4, sizeof(sa4), uaddr) == 0) {
-            e->dest_ip   = sa4.sin_addr.s_addr;
-            e->dest_port = __builtin_bswap16(sa4.sin_port);
-        }
-    }
-
-    bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    bpf_ringbuf_submit(e, 0);
-    return 0;
-}
-
-
-//HE X-RAY BEHAVIORAL LSM HOOK
-SEC("lsm/file_open")
-int BPF_PROG(restrict_files, struct file *file) {
-    char comm[16];
-    bpf_get_current_comm(&comm, sizeof(comm));
-
-    //Only watch risky shells and engines
-    int is_risky = 0;
-    if (comm[0] == 'c' && comm[1] == 'a' && comm[2] == 't') is_risky = 1;
-    if (comm[0] == 's' && comm[1] == 'h') is_risky = 1;
-    if (comm[0] == 'n' && comm[1] == 'o' && comm[2] == 'd' && comm[3] == 'e') is_risky = 1;
-    if (comm[0] == 'b' && comm[1] == 'a' && comm[2] == 's' && comm[3] == 'h') is_risky = 1;
-
-    // If it's a host daemon, ignore it completely
-    if (!is_risky) {
-        return 0; 
-    }
-
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-    const unsigned char *filename = BPF_CORE_READ(dentry, d_name.name);
-
-    char local_name[64] = {0};
-    bpf_probe_read_kernel_str(&local_name, sizeof(local_name), filename);
-
-    bpf_printk("[SHADOW-LSM] Program '%s' trying to read: %s\n", comm, local_name);
-
-    int block_execution = 0;
-    if (local_name[0] == 'p' && local_name[1] == 'a' &&
-        local_name[2] == 's' && local_name[3] == 's' &&
-        local_name[4] == 'w' && local_name[5] == 'd') {
-        block_execution = 1;
-    }
-
-    if (block_execution) {
+    // DYNAMIC LOOKUP: Does this file exist in our map?
+    u32 *rule = bpf_map_lookup_elem(&blocklist, &key);
+    
+    if (rule && *rule == 1) {
+        // Boom. It's in the blocklist.
+        bpf_printk("[LSM BLOCK DYNAMIC] Access denied to: %s by PID: %d\n", key.name, pid);
+        
+        // Optional: Send an alert to C++ via ringbuf here
         struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
         if (e) {
-            e->type = 2; // EVENT_TYPE_FILE
+            e->type = 2; // 2 = Blocked File Access
             e->pid = pid;
-            __builtin_memcpy(e->filename, local_name, sizeof(local_name));
+            bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), key.name);
             bpf_ringbuf_submit(e, 0);
         }
-        return -EPERM; 
+
+        return -EPERM; // Return Operation Not Permitted
     }
 
     return 0;
 }
-
-char LICENSE[] SEC("license") = "GPL";
