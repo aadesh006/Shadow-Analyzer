@@ -118,8 +118,7 @@ int Sandbox::child_entry(void* arg) {
 
 //ENGINE LAUNCHER
 int Sandbox::run(const std::string& command, const std::vector<std::string>& args) {
-    system("umount -R /tmp/shadow_jail 2>/dev/null");
-    system("rm -rf /tmp/shadow_jail");
+    umount2("/tmp/shadow_jail", MNT_DETACH);
 
     char* stack = new char[STACK_SIZE];
     char* stack_top = stack + STACK_SIZE;
