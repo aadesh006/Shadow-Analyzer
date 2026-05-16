@@ -65,6 +65,7 @@ if (!target.empty() && target[0] == '/') {
         // std::cout << "[Shadow] Invoking Behavioral Parser..." << std::endl;
         // Parser parser;
         // parser.analyzeLog("shadow_trace.log");
+        int sandbox_status = sandbox.run(pkg_manager, args);
 
         std::cout << "[Shadow] Sweeping ring buffer for final logs..." << std::endl;
         sleep(2); 
@@ -73,16 +74,21 @@ if (!target.empty() && target[0] == '/') {
 
         std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
 
-        if (kernel_observer.threat_detected) {
+    if (sandbox_status == 124) {
+            std::cout << COLOR_YELLOW
+                      << "[RESULT] TIMEOUT — Package stalled the sandbox. Requires manual review."
+                      << COLOR_RESET << std::endl;
+        } 
+        else if (kernel_observer.threat_detected) {
             std::cout << COLOR_RED
-              << "[RESULT] MALICIOUS — " 
-              << kernel_observer.threat_description
-              << "\n         DO NOT INSTALL THIS PACKAGE."
-              << COLOR_RESET << std::endl;
+                      << "[RESULT] MALICIOUS — " 
+                      << kernel_observer.threat_description
+                      << "\n         DO NOT INSTALL THIS PACKAGE."
+                      << COLOR_RESET << std::endl;
         } else {
             std::cout << COLOR_GREEN
-              << "[RESULT] CLEAN — No threats detected."
-              << COLOR_RESET << std::endl;
+                      << "[RESULT] CLEAN — No threats detected."
+                      << COLOR_RESET << std::endl;
         }
 
 
