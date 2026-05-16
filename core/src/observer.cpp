@@ -188,6 +188,12 @@ if (comm == "systemd-resolve" ||
 
     //Network Connection
     if (e->type == 1) {
+        if (e->family == 10) { // AF_INET6
+            std::cout << "  " COLOR_YELLOW "[SUSPICIOUS]" COLOR_RESET
+                      << " IPv6 Outbound (Possible C2 Evasion). PID: " << e->pid
+                      << " Process: " << e->comm << std::endl;
+        }
+
     if (e->family == 2) {
         struct in_addr addr;
         addr.s_addr = e->dest_ip;
@@ -229,7 +235,7 @@ if (comm == "systemd-resolve" ||
 
         std::cout << "\n  " COLOR_RED
                   << "╔══════════════════════════════════════════╗\n"
-                  << "  ║       LSM THREAT BLOCKED AT RING 0     ║\n"
+                  << "  ║       LSM THREAT BLOCKED AT RING 0       ║\n"
                   << "  ╚══════════════════════════════════════════╝"
                   << COLOR_RESET << "\n"
                   << "  Process:  " << e->comm << " (PID " << e->pid << ")\n"
