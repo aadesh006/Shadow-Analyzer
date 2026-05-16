@@ -3,12 +3,15 @@
 #include <vector>
 #include <unistd.h>
 #include "../include/sandbox.h"
-#include "../include/parser.h"
 #include "../include/observer.h"
 
 //ANSI Terminal Colors
-const std::string COLOR_RESET  = "\033[0m";
-const std::string COLOR_CYAN   = "\033[1;36m";
+#define COLOR_RESET   "\033[0m"
+#define COLOR_RED     "\033[1;31m"
+#define COLOR_GREEN   "\033[1;32m"
+#define COLOR_YELLOW  "\033[1;33m"
+#define COLOR_CYAN    "\033[1;36m"
+#define COLOR_MAGENTA "\033[1;35m"
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -42,7 +45,8 @@ int main(int argc, char* argv[]) {
             "--cache=/tmp/.npm",
             //"--loglevel=silly",
             //"--no-progress",
-            "--fetch-timeout=5000"
+            "--fetch-timeout=5000",
+            "--loglevel=error"
         };
         
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
@@ -56,6 +60,20 @@ int main(int argc, char* argv[]) {
         sleep(2); 
 
         kernel_observer.stop(); 
+
+        std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
+
+        if (kernel_observer.threat_detected) {
+            std::cout << COLOR_RED
+              << "[RESULT] MALICIOUS — " 
+              << kernel_observer.threat_description
+              << "\n         DO NOT INSTALL THIS PACKAGE."
+              << COLOR_RESET << std::endl;
+        } else {
+            std::cout << COLOR_GREEN
+              << "[RESULT] CLEAN — No threats detected."
+              << COLOR_RESET << std::endl;
+        }
 
 
     } else {
