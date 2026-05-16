@@ -91,6 +91,12 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
     if ((ip & 0xFFFF) == 0xA8C0) return 0; // 192.168.x.x
     if ((ip & 0xFF)   == 0x0A)   return 0; // 10.x.x.x
 
+    if ((ip & 0xFF) == 0x0A) return 0;
+
+    u8 b1 = ip & 0xFF;
+u8 b2 = (ip >> 8) & 0xFF;
+if (b1 == 0xAC && b2 >= 0x10 && b2 <= 0x1F) return 0;
+
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
@@ -106,10 +112,11 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
+SEC("lsm/file_open")
 int BPF_PROG(shadow_file_open, struct file *file) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
-    if (pid < 10) return 0;
+    if (pid < 100) return 0;
 
     struct path_key key = {};
     const unsigned char *fname = BPF_CORE_READ(file, f_path.dentry, d_name.name);

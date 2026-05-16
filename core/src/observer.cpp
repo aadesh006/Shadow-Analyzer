@@ -174,13 +174,15 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz) {
 
     //Filter host system noise
     std::string comm(e->comm);
-    if (comm == "systemd-resolve" ||
-        comm == "systemd"||
-        comm == "shadow"||
-        comm == "code"||
-        comm == "sh"||
-        comm == "umount"||
-        comm == "rm") {
+if (comm == "systemd-resolve" ||
+    comm == "systemd"         ||
+    comm == "shadow"          ||
+    comm == "code"            ||
+    comm == "Chrome_ChildIOT" ||
+    comm == "chrome"          ||
+    comm == "sh"              ||
+    comm == "umount"          ||
+    comm == "rm") {
     return 0;
 }
 
@@ -247,8 +249,7 @@ int Observer::handle_event(void *ctx, void *data, size_t data_sz) {
 
         bool is_expected = (
             binary.find("npm")    != std::string::npos ||
-            binary.find("node")   != std::string::npos ||
-            binary.find("sh")     != std::string::npos
+            binary.find("node")   != std::string::npos
         );
 
         if (!is_expected) {

@@ -22,6 +22,16 @@ int main(int argc, char* argv[]) {
     std::string command = argv[1];
     std::string target = argv[2];
 
+std::string npm_target = target;
+if (!target.empty() && target[0] == '/') {
+    std::string filename = target.substr(target.find_last_of('/') + 1);
+    // Only rewrite if it looks like a tarball
+    if (filename.find(".tgz") != std::string::npos ||
+        filename.find(".tar") != std::string::npos) {
+        npm_target = "/tmp/" + filename;
+    }
+}
+
     if (command == "analyze") {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Target: " << target << "\n" << std::endl;
@@ -38,7 +48,7 @@ int main(int argc, char* argv[]) {
         
         std::vector<std::string> args = {
             "install", 
-            target,
+            npm_target,
             "--ignore-scripts=false",
             "--no-audit", 
             "--no-fund",
@@ -46,7 +56,7 @@ int main(int argc, char* argv[]) {
             //"--loglevel=silly",
             //"--no-progress",
             "--fetch-timeout=5000",
-            "--loglevel=error"
+            //"--loglevel=warn"
         };
         
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;

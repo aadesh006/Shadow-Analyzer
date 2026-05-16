@@ -11,6 +11,13 @@
 #include <fstream>
 #include "../include/sandbox.h"
 
+#define COLOR_RESET   "\033[0m"
+#define COLOR_RED     "\033[1;31m"
+#define COLOR_GREEN   "\033[1;32m"
+#define COLOR_YELLOW  "\033[1;33m"
+#define COLOR_CYAN    "\033[1;36m"
+#define COLOR_MAGENTA "\033[1;35m"
+
 const int STACK_SIZE = 1024 * 1024; 
 
 struct ChildArgs {
@@ -73,11 +80,22 @@ bool construct_prison(const char *target_path) {
 
     chdir("/");
 
-    if (target_path != nullptr && strncmp(target_path, "/tmp/", 5) == 0) {
-        std::string src = std::string("/old_root") + target_path;
-        std::string cmd = "cp " + src + " " + target_path + " 2>/dev/null";
-        system(cmd.c_str());
+// Copy ANY target file into the jail's /tmp
+if (target_path != nullptr && target_path[0] == '/') {
+    std::string filename = std::string(target_path);
+    filename = filename.substr(filename.find_last_of('/') + 1);
+
+    std::string src = std::string("/old_root") + target_path;
+    std::string dst = "/tmp/" + filename;
+
+    std::string cmd = "cp \"" + src + "\" \"" + dst + "\"";
+    if (system(cmd.c_str()) == 0) {
+        chmod(dst.c_str(), 0644);
+        std::cout << "  [Prison] Tarball staged: " << dst << std::endl;
+    } else {
+        std::cout << "  [Prison] ERROR: Failed to stage tarball" << std::endl;
     }
+}
 
     umount2("/old_root", MNT_DETACH);
     rmdir("/old_root");
@@ -99,15 +117,28 @@ int Sandbox::child_entry(void* arg) {
     std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
     if (chdir("/tmp") == -1) return -1;
 
-    // THE SECURE DOWNGRADE
-    const char* sudo_uid = getenv("SUDO_UID");
-    const char* sudo_gid = getenv("SUDO_GID");
-    int target_uid = sudo_uid ? atoi(sudo_uid) : 1000;
-    int target_gid = sudo_gid ? atoi(sudo_gid) : 1000;
+// THE SECURE DOWNGRADE
+const char* sudo_uid = getenv("SUDO_UID");
+const char* sudo_gid = getenv("SUDO_GID");
+int target_uid = sudo_uid ? atoi(sudo_uid) : 1000;
+int target_gid = sudo_gid ? atoi(sudo_gid) : 1000;
 
-    chown("/tmp", target_uid, target_gid);
-    setgid(target_gid);
-    setuid(target_uid);
+chown("/tmp", target_uid, target_gid);
+
+// Create package.json WHILE STILL ROOT so npm runs postinstall
+const char* ctx = "{\"name\":\"shadow-sandbox\",\"version\":\"1.0.0\"}\n";
+int pfd = open("/tmp/package.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+if (pfd >= 0) {
+    write(pfd, ctx, strlen(ctx));
+    close(pfd);
+    chown("/tmp/package.json", target_uid, target_gid);
+    std::cout << "  [Prison] Sandbox context created." << std::endl;
+}
+
+// NOW drop privileges
+setgid(target_gid);
+setuid(target_uid);
+
 
     std::cout << "  [Prison] Sandbox Identity downgraded securely to UID: " << getuid() << std::endl;
 
@@ -174,8 +205,26 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     write(fd, gid_map.c_str(), gid_map.length());
     close(fd);
 
-    int status;
-    waitpid(child_pid, &status, 0);
+int status;
+int timeout_secs = 60; // kill sandbox after 60 seconds
+time_t start = time(nullptr);
+pid_t result = 0;
+
+while (result == 0) {
+    result = waitpid(child_pid, &status, WNOHANG);
+    if (result == 0) {
+        if (time(nullptr) - start >= timeout_secs) {
+            std::cout << COLOR_YELLOW 
+                      << "[Shadow] Sandbox timeout — killing analysis."
+                      << COLOR_RESET << std::endl;
+            kill(child_pid, SIGKILL);
+            waitpid(child_pid, &status, 0);
+            break;
+        }
+        usleep(100000); // poll every 100ms
+    }
+}
+
     std::cout << "[Shadow] Sandbox execution completed." << std::endl;
 
     delete[] stack;
