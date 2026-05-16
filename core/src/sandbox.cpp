@@ -81,21 +81,24 @@ bool construct_prison(const char *target_path) {
     chdir("/");
 
 // Copy ANY target file into the jail's /tmp
-if (target_path != nullptr && target_path[0] == '/') {
-    std::string filename = std::string(target_path);
-    filename = filename.substr(filename.find_last_of('/') + 1);
+    if (target_path != nullptr && target_path[0] == '/') {
+        std::string filename = std::string(target_path);
+        filename = filename.substr(filename.find_last_of('/') + 1);
 
-    std::string src = std::string("/old_root") + target_path;
-    std::string dst = "/tmp/" + filename;
+        std::string src = std::string("/old_root") + target_path;
+        std::string dst = "/tmp/" + filename;
 
-    std::string cmd = "cp \"" + src + "\" \"" + dst + "\"";
-    if (system(cmd.c_str()) == 0) {
-        chmod(dst.c_str(), 0644);
-        std::cout << "  [Prison] Tarball staged: " << dst << std::endl;
-    } else {
-        std::cout << "  [Prison] ERROR: Failed to stage tarball" << std::endl;
+        std::ifstream in(src, std::ios::binary);
+        std::ofstream out(dst, std::ios::binary);
+        
+        if (in && out) {
+            out << in.rdbuf();
+            chmod(dst.c_str(), 0644);
+            std::cout << "  [Prison] Tarball staged natively: " << dst << std::endl;
+        } else {
+            std::cout << "  [Prison] ERROR: Failed to read from " << src << " or write to " << dst << std::endl;
+        }
     }
-}
 
     umount2("/old_root", MNT_DETACH);
     rmdir("/old_root");
@@ -112,7 +115,7 @@ int Sandbox::child_entry(void* arg) {
     sleep(1);
 
     // Build the void as Root, passing the target path
-    if (!construct_prison(args->argv[1])) return -1;
+    if (!construct_prison(args->argv[2])) return -1;
     
     std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
     if (chdir("/tmp") == -1) return -1;
@@ -219,7 +222,7 @@ while (result == 0) {
                       << COLOR_RESET << std::endl;
             kill(child_pid, SIGKILL);
             waitpid(child_pid, &status, 0);
-            break;
+            return 124;
         }
         usleep(100000); // poll every 100ms
     }
