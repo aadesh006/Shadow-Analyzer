@@ -8,6 +8,7 @@
 #include <sys/syscall.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <fstream>
 #include "../include/sandbox.h"
 
 const int STACK_SIZE = 1024 * 1024; 
@@ -17,16 +18,16 @@ struct ChildArgs {
     char** argv;
 };
 
-bool construct_prison();
+bool construct_prison(const char *target_path);
 
 Sandbox::Sandbox() {}
 Sandbox::~Sandbox() {}
 
 
-bool construct_prison() {
+bool construct_prison(const char *target_path) {
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) return false;
-
     const char* jail_dir = "/tmp/shadow_jail";
+    
     mkdir(jail_dir, 0777);
     if (mount(jail_dir, jail_dir, "bind", MS_BIND | MS_REC, NULL) == -1) return false;
 
@@ -71,6 +72,13 @@ bool construct_prison() {
     if (syscall(SYS_pivot_root, jail_dir, put_old) == -1) return false;
 
     chdir("/");
+
+    if (target_path != nullptr && strncmp(target_path, "/tmp/", 5) == 0) {
+        std::string src = std::string("/old_root") + target_path;
+        std::string cmd = "cp " + src + " " + target_path + " 2>/dev/null";
+        system(cmd.c_str());
+    }
+
     umount2("/old_root", MNT_DETACH);
     rmdir("/old_root");
 
@@ -83,10 +91,11 @@ int Sandbox::child_entry(void* arg) {
     
 
     std::cout << "  [Prison] Sandbox Paused. Awaiting identity injection from Host..." << std::endl;
-    sleep(1); 
+    sleep(1);
+
+    // Build the void as Root, passing the target path
+    if (!construct_prison(args->argv[1])) return -1;
     
-    // Build the void as Root
-    if (!construct_prison()) return -1;
     std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
     if (chdir("/tmp") == -1) return -1;
 
