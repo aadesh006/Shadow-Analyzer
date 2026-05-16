@@ -59,6 +59,25 @@ int handle_execve(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
+SEC("tp/syscalls/sys_enter_execveat")
+int handle_execveat(struct trace_event_raw_sys_enter *ctx) {
+    struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e) return 0;
+
+    e->type = 3; // PROCESS
+    e->pid  = bpf_get_current_pid_tgid() >> 32;
+    
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    e->ppid = BPF_CORE_READ(task, real_parent, tgid);
+
+    // In execveat, the filename pointer is usually args[1], not args[0]
+    const char *filename_ptr = (const char *)ctx->args[1];
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
 
 //Network Connection Tracking
 SEC("tracepoint/syscalls/sys_enter_connect")
@@ -69,6 +88,19 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
     void *uaddr = (void *)ctx->args[1];
     if (bpf_probe_read_user(&sa, sizeof(sa), uaddr) != 0)
         return 0;
+
+    if (sa.sa_family == AF_INET6) {
+        struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (!e) return 0;
+        
+        e->type = 1;
+        e->pid = pid;
+        e->family = AF_INET6; 
+        bpf_get_current_comm(&e->comm, sizeof(e->comm));
+        
+        bpf_ringbuf_submit(e, 0);
+        return 0;
+    }
 
     if (sa.sa_family != AF_INET) return 0;
 
@@ -94,8 +126,8 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
     if ((ip & 0xFF) == 0x0A) return 0;
 
     u8 b1 = ip & 0xFF;
-u8 b2 = (ip >> 8) & 0xFF;
-if (b1 == 0xAC && b2 >= 0x10 && b2 <= 0x1F) return 0;
+    u8 b2 = (ip >> 8) & 0xFF;
+    if (b1 == 0xAC && b2 >= 0x10 && b2 <= 0x1F) return 0;
 
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
