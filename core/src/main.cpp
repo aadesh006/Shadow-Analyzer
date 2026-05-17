@@ -60,7 +60,6 @@ if (!target.empty() && target[0] == '/') {
         };
         
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
-        sandbox.run(pkg_manager, args);
         
         // std::cout << "[Shadow] Invoking Behavioral Parser..." << std::endl;
         // Parser parser;
