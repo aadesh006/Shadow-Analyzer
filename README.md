@@ -44,7 +44,7 @@ A threat actor compromised the npm account of the primary axios maintainer and p
 
 ### The TanStack attack (May 11, 2026)
 
-84 malicious versions across 42 `@tanstack` packages were published using TanStack's own CI pipeline after an attacker poisoned the GitHub Actions build cache and extracted an OIDC token from runner memory. The payload carried **valid SLSA Build Level 3 provenance attestations** — a first in documented supply chain attacks.
+84 malicious versions across 42 `@tanstack` packages were published using TanStack's own CI pipeline after an attacker poisoned the GitHub Actions build cache and extracted an OIDC token from runner memory. The payload carried **valid SLSA Build Level 3 provenance attestations** — the first time in documented supply chain history that a malicious package carried cryptographically valid build provenance.
 
 ### What every tool missed
 
@@ -168,23 +168,92 @@ Docker's overhead per syscall is also significantly higher. Shadow's eBPF tracep
 
 ---
 
+## Compatibility
+
+Shadow is **Linux only**. It uses Linux-specific kernel APIs — `clone()` with namespace flags, `pivot_root`, and eBPF — that have no equivalent on macOS or Windows. There is no port path without rebuilding from scratch using completely different primitives.
+
+### Three hard requirements
+
+All three must be satisfied before Shadow will run:
+
+**1. Linux kernel 5.8+**
+The eBPF Ring Buffer used for event streaming requires kernel 5.8 minimum.
+
+**2. `CONFIG_BPF_LSM=y` compiled into the kernel**
+```bash
+cat /boot/config-$(uname -r) | grep CONFIG_BPF_LSM
+# Must show: CONFIG_BPF_LSM=y
+```
+
+**3. `bpf` active in the LSM list at boot**
+Even if compiled in, eBPF LSM hooks only fire if `bpf` is listed as an active LSM module at boot:
+```bash
+cat /sys/kernel/security/lsm
+# Must contain "bpf" e.g.: ndlock,lockdown,yama,integrity,apparmor,bpf
+```
+
+If `bpf` is missing from the LSM list, add it to GRUB:
+```bash
+sudo nano /etc/default/grub
+# Append "bpf" to GRUB_CMDLINE_LINUX:
+# lsm=ndlock,lockdown,yama,integrity,apparmor,bpf
+
+sudo update-grub && sudo reboot
+```
+
+### Distro compatibility
+
+| Distro | Kernel | Works | Notes |
+|---|---|---|---|
+| Ubuntu 24.04 LTS | 6.8 | ✅ Yes | BPF LSM active by default |
+| Fedora 39+ | 6.5+ | ✅ Yes | Ships with BPF LSM active |
+| Arch Linux | Rolling (6.x) | ✅ Yes | Fully supported |
+| Kali Linux | Rolling | ✅ Yes | BPF LSM active |
+| Ubuntu 22.04 LTS | 5.15 | ⚠️ Partial | Needs one-time GRUB edit |
+| Debian 12 (Bookworm) | 6.1 | ⚠️ Partial | Needs one-time GRUB edit |
+| Linux Mint 21 | 5.15 | ⚠️ Partial | Ubuntu 22.04 base — needs GRUB edit |
+| RHEL 9 / Rocky 9 | 5.14 backport | ❌ No | `CONFIG_BPF_LSM` disabled |
+| RHEL 8 / Rocky 8 | 4.18 backport | ❌ No | Kernel too old |
+| Amazon Linux 2 | 5.10 | ❌ No | `CONFIG_BPF_LSM` not enabled |
+| CentOS Stream 9 | 5.14 | ❌ No | Same as RHEL 9 |
+| macOS | — | ❌ No | No Linux namespace or eBPF support |
+| Windows | — | ❌ No | No Linux namespace or eBPF support |
+
+> RHEL/CentOS/Amazon Linux don't work because enterprise distros disable bleeding-edge kernel features for stability. Fixing this requires CO-RE (Compile Once, Run Everywhere) portability work — planned but not yet implemented.
+
+### Quick compatibility check
+
+Run this before building:
+```bash
+echo "=== Shadow Compatibility Check ===" && \
+echo "Kernel: $(uname -r)" && \
+echo "BTF: $(ls /sys/kernel/btf/vmlinux 2>/dev/null && echo OK || echo MISSING)" && \
+echo "BPF_LSM: $(cat /boot/config-$(uname -r) 2>/dev/null | grep CONFIG_BPF_LSM || echo NOT FOUND)" && \
+echo "LSM list: $(cat /sys/kernel/security/lsm 2>/dev/null || echo NOT FOUND)"
+```
+
+All four lines should show kernel 5.8+, BTF OK, `CONFIG_BPF_LSM=y`, and an LSM list containing `bpf`.
+
+---
+
 ## Building from Source
 
-**Requirements:**
-
-- Linux kernel 5.8+ with BTF enabled (`/sys/kernel/btf/vmlinux` must exist)
-- Ubuntu 20.04+ or Debian 11+ recommended
-- `clang` (for eBPF compilation)
-- `bpftool` (for skeleton generation)
-- `libbpf-dev`, `libelf-dev`
-- `cmake` 3.10+, C++17 compiler
-- Root — required for `clone()` with namespace flags and eBPF program loading
+**Dependencies:**
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
+# Ubuntu / Debian
 sudo apt install clang bpftool libbpf-dev libelf-dev cmake build-essential
 
-# Build
+# Fedora
+sudo dnf install clang bpftool libbpf-devel elfutils-libelf-devel cmake gcc-c++
+
+# Arch
+sudo pacman -S clang bpf libbpf cmake
+```
+
+**Build:**
+
+```bash
 git clone https://github.com/aadesh006/Shadow-Analyzer
 cd Shadow-Analyzer
 mkdir build && cd build
@@ -194,32 +263,25 @@ make
 
 The build pipeline:
 1. `clang` compiles `shadow.bpf.c` to eBPF bytecode targeting the BPF architecture
-2. `bpftool gen skeleton` generates the C++ skeleton header used to load and attach the programs
+2. `bpftool gen skeleton` generates the C++ skeleton header used to load and attach programs
 3. `cmake` compiles and links the C++ host binary against `libbpf`, `libelf`, `libz`
-
-**Verify BTF is available:**
-```bash
-ls /sys/kernel/btf/vmlinux
-# Must exist. If not, BTF is not enabled in your kernel.
-```
 
 ---
 
 ## Usage
 
 ```bash
-# Analyze any npm package before installing
-sudo shadow analyze <package>
-sudo shadow analyze <package>@<version>
+sudo ./shadow analyze <package>
+sudo ./shadow analyze <package>@<version>
 
 # Examples
-sudo shadow analyze lodash
-sudo shadow analyze axios@1.14.1
-sudo shadow analyze esbuild
-sudo shadow analyze sharp
+sudo ./shadow analyze lodash
+sudo ./shadow analyze axios@1.14.1
+sudo ./shadow analyze esbuild
+sudo ./shadow analyze sharp
 ```
 
-Shadow must be run as root. The analysis completes in the time it takes npm to install the package (typically 1–30 seconds). If the package stalls or hangs, Shadow kills the sandbox after 60 seconds.
+Shadow must be run as root. Analysis completes in the time npm takes to install the package (1–30 seconds). If the package stalls, Shadow kills the sandbox after 60 seconds.
 
 ### Output Guide
 
@@ -235,9 +297,9 @@ LSM BLOCKED  → Credential file access denied natively in Ring 0
 ### Verdicts
 
 ```
-CLEAN    → No threats detected. Safe to install.
+CLEAN     → No threats detected. Safe to install.
 MALICIOUS → Definitive threat detected. Do not install.
-TIMEOUT  → Package stalled analysis. Manual review required.
+TIMEOUT   → Package stalled analysis. Manual review required.
 ```
 
 ---
@@ -280,19 +342,21 @@ Shadow-Analyzer/
 
 ## Known Limitations
 
-**Root required.** `clone()` with namespace flags and eBPF program loading both require root. Rootless support is on the roadmap.
+**Root required.** `clone()` with namespace flags and eBPF program loading both require root.
 
-**Linux only.** Shadow uses Linux-specific APIs (eBPF, Linux namespaces, `pivot_root`). macOS and Windows are not supported.
+**Linux only.** macOS and Windows are not supported and there is no port path without rebuilding from scratch.
 
-**Linux kernel 5.8+ required.** eBPF LSM hooks require kernel 5.8+ with `CONFIG_BPF_LSM` enabled. Ubuntu 20.04+ works out of the box.
+**Not all Linux distros are supported.** RHEL, CentOS, Amazon Linux 2, and similar enterprise distros ship kernels with `CONFIG_BPF_LSM` disabled. See the compatibility table above.
 
-**npm only.** pip/PyPI support is planned for Phase 2.
+**npm only.** pip/PyPI support is planned.
 
-**Network connections observed but not blocked.** `CLONE_NEWNET` is not yet enabled. Shadow detects outbound connections and classifies them but does not block them at the network level. A malicious package can still exfiltrate data during the analysis window if it reaches a non-blocked IP. This is the next item on the roadmap.
+**Network connections observed but not blocked.** `CLONE_NEWNET` is not yet enabled. Shadow classifies outbound connections but does not block them at the network level. A malicious package can still exfiltrate data during the analysis window.
 
-**LSM hooks are host-global.** The eBPF LSM hook watches all processes on the host, not just the sandbox. Host system processes (pkexec, polkitd, update-notifier) that read credential files during the analysis window can cause false positive MALICIOUS verdicts. PID-scoped filtering is in progress.
+**LSM hooks are host-global.** The eBPF LSM hook watches all processes on the host, not just the sandbox. Host system processes that read credential files during the analysis window can cause false positive MALICIOUS verdicts. PID-scoped filtering is in progress.
 
-**Staged payloads.** A package that detects it is being analyzed and behaves cleanly during the observation window will not be caught. This is a fundamental limitation of dynamic analysis with a fixed time window.
+**Staged payloads.** A package that behaves cleanly during the analysis window will not be caught. Fundamental limitation of dynamic analysis.
+
+**Early stage, single developer.** Shadow is built by one person still learning kernel-level programming. There are likely bugs and gaps that haven't been found yet. That's part of why it's open source.
 
 ---
 
@@ -303,39 +367,48 @@ Shadow-Analyzer/
 | Phase 1 | Core sandbox + eBPF LSM + unified verdict engine + `analyze` CLI | **In progress** |
 | Phase 2 | `CLONE_NEWNET` network isolation, PID-scoped LSM filtering, `shadow diff` (OverlayFS) | Next |
 | Phase 3 | `shadow watch` continuous EDR daemon, `shadow policy sync` remote threat feeds | Planned |
-| Phase 4 | pip/PyPI support, GitHub Actions integration, VS Code extension | Planned |
-
-**Immediate next steps:**
-- Enable `CLONE_NEWNET` to isolate sandbox network stack
-- Implement PID-scoped LSM filtering to eliminate host process false positives
-- Add OverlayFS filesystem delta (`shadow diff`) to show exactly what files a package drops
+| Phase 4 | pip/PyPI support, GitHub Actions integration, CO-RE portability for RHEL/Amazon Linux | Planned |
 
 ---
 
 ## Contributing
 
-Shadow is early-stage and contributions are welcome. The most useful contributions right now:
+Shadow is early-stage and built by one person who is still learning kernel-level development. Contributions are genuinely welcome — especially from people who know this space better than I do.
 
-- Additional entries for `shadow_rules.conf` (sensitive file paths)
+**Rules and intelligence** — most accessible starting point, no kernel knowledge required:
+- Additional entries for `shadow_rules.conf` (sensitive file paths Shadow should block)
 - Entries for `threat_intel.cpp` `is_malicious()` (known C2 domains and IPs)
-- Testing on different Linux distributions and kernel versions
-- Bug reports with full output
+- Entries for `is_trusted_cdn()` (legitimate CDN destinations that should not be flagged)
+
+**Code review** — where experienced eyes are most needed:
+- The eBPF LSM hook implementation — edge cases I haven't covered
+- The `pivot_root` sandbox construction — potential escape vectors
+- The namespace setup — correctness of `CLONE_NEWUSER` UID/GID mapping
+- Anything that looks wrong to someone with kernel experience
+
+**Testing:**
+- Running Shadow on distros not in the compatibility table and reporting results
+- Testing with packages that have complex postinstall scripts
+- Finding false positives on legitimate packages
+
+Bug reports with the full Shadow output and your kernel version (`uname -r`) are extremely helpful.
 
 ```bash
 git clone https://github.com/aadesh006/Shadow-Analyzer
 cd Shadow-Analyzer
 mkdir build && cd build
 cmake .. && make
-sudo ./shadow analyze lodash   # should return CLEAN
+sudo ./shadow analyze lodash   # should return CLEAN in ~1s
+sudo ./shadow analyze esbuild  # should return CLEAN with CDN traffic logged
 ```
 
 ---
 
 ## Background
 
-Shadow was built in response to the axios npm supply chain attack (March 2026). The only tool that caught that attack in CI — StepSecurity Harden-Runner — is an enterprise-grade GitHub Actions product costing hundreds of dollars per month. There was no open-source, developer-local equivalent that could analyze a package before installation using runtime behavioral analysis.
+Shadow was built in response to the axios npm supply chain attack (March 2026). The only tool that caught that attack in CI was StepSecurity Harden-Runner — an enterprise-grade GitHub Actions product. There was no open-source, developer-local equivalent that could analyze a package before installation using runtime behavioral analysis at the kernel level.
 
-Shadow fills that gap.
+Shadow fills that gap. It is not finished, but the core is working and the problem it is solving is real.
 
 ---
 
