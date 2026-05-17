@@ -188,11 +188,16 @@ if (comm == "systemd-resolve" ||
 
     //Network Connection
     if (e->type == 1) {
-        if (e->family == 10) { // AF_INET6
-            std::cout << "  " COLOR_YELLOW "[SUSPICIOUS]" COLOR_RESET
-                      << " IPv6 Outbound (Possible C2 Evasion). PID: " << e->pid
-                      << " Process: " << e->comm << std::endl;
-        }
+
+    if (e->family == 10) { // AF_INET6
+    // npm legitimately uses IPv6 to reach registry.npmjs.org
+    std::cout << "  " COLOR_CYAN "[NET6]" COLOR_RESET
+              << " PID: " << e->pid
+              << " Process: " << e->comm
+              << " IPv6 outbound"
+              << std::endl;
+    // Do NOT set threat_detected for IPv6 until proper classification exists
+    }
 
     if (e->family == 2) {
         struct in_addr addr;
