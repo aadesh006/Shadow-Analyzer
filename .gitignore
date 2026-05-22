@@ -31,3 +31,4 @@ compile_commands.json
 core/src/bpf/shadow.bpf.o
 core/src/bpf/shadow.skel.h
 core/src/bpf/vmlinux.h
+*.tgz
