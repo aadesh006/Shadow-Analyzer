@@ -290,6 +290,17 @@ if (comm == "systemd-resolve" ||
             }
         }
     }
+    
+    else if (e->type == 4) {
+    std::cout << "  " COLOR_RED "[ALERT]" COLOR_RESET
+              << " Anonymous memory execution attempt (memfd_create)!"
+              << " PID: " << e->pid
+              << " Process: " << e->comm
+              << std::endl;
+    self->threat_detected    = true;
+    self->threat_description = "memfd_create: fileless execution attempt by " 
+                               + std::string(e->comm);
+    }
 
     return 0;
 }
