@@ -173,3 +173,19 @@ int BPF_PROG(shadow_file_open, struct file *file) {
 
     return 0;
 }
+
+SEC("tp/syscalls/sys_enter_memfd_create")
+int handle_memfd_create(struct trace_event_raw_sys_enter *ctx) {
+    struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e) return 0;
+
+    e->type = 4; // MEMFD
+    e->pid  = bpf_get_current_pid_tgid() >> 32;
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+    const char *name_ptr = (const char *)ctx->args[0];
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), name_ptr);
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
