@@ -149,12 +149,10 @@ int BPF_PROG(shadow_file_open, struct file *file) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     if (pid < 10) return 0;
 
-    char path[128] = {};
     struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-    struct dentry *parent;
+    struct dentry *parent = BPF_CORE_READ(dentry, d_parent);
     
     const unsigned char *fname = BPF_CORE_READ(dentry, d_name.name);
-    parent = BPF_CORE_READ(dentry, d_parent);
     const unsigned char *pname = BPF_CORE_READ(parent, d_name.name);
 
     char filename[64] = {};
@@ -174,8 +172,20 @@ int BPF_PROG(shadow_file_open, struct file *file) {
     struct path_key key = {};
     bpf_probe_read_kernel_str(&key.name, sizeof(key.name), fname);
 
+    // Look up the filename in our blocklist
     u32 *rule = bpf_map_lookup_elem(&blocklist, &key);
+    
     if (rule && *rule == 1) {
+        struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (e) {
+            e->type = 2; // LSM_BLOCK
+            e->pid  = pid;
+            bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), fname);
+            bpf_get_current_comm(&e->comm, sizeof(e->comm));
+            bpf_ringbuf_submit(e, 0);
+        }
+        bpf_printk("[SHADOW-LSM] BLOCKED %s/%s by PID %d\n", parentname, key.name, pid);
+        return -EPERM;
     }
     return 0;
 }
