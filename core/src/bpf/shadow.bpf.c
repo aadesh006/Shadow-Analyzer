@@ -46,10 +46,31 @@ struct {
     __type(value, u32);   // 1 = block
 } ip_blocklist SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} sandbox_ns SEC(".maps");
+
+static __always_inline int is_in_sandbox(void)
+{
+    u32 zero = 0;
+    u64 *target_ns = bpf_map_lookup_elem(&sandbox_ns, &zero);
+    if (!target_ns || *target_ns == 0)
+        return 0; // sandbox not registered yet — treat as not-in-sandbox, fail closed
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u64 current_ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children, ns.inum);
+
+    return current_ns == *target_ns;
+}
+
 
 //Process Tracking (execve)
 SEC("tp/syscalls/sys_enter_execve")
 int handle_execve(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
@@ -69,6 +90,7 @@ int handle_execve(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tp/syscalls/sys_enter_execveat")
 int handle_execveat(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
@@ -90,6 +112,7 @@ int handle_execveat(struct trace_event_raw_sys_enter *ctx) {
 //Network Connection Tracking
 SEC("tracepoint/syscalls/sys_enter_connect")
 int handle_connect(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     struct sockaddr sa = {};
@@ -154,6 +177,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("lsm/file_open")
 int BPF_PROG(shadow_file_open, struct file *file) {
+    if (!is_in_sandbox()) return 0;
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     if (pid < 10) return 0;
 
@@ -201,6 +225,7 @@ int BPF_PROG(shadow_file_open, struct file *file) {
 SEC("lsm/socket_connect")
 int BPF_PROG(shadow_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen, int ret)
 {
+    if (!is_in_sandbox()) return 0;
     if (ret != 0) return ret;
 
     if (address->sa_family != AF_INET) return 0;
@@ -231,6 +256,7 @@ int BPF_PROG(shadow_socket_connect, struct socket *sock, struct sockaddr *addres
 
 SEC("tp/syscalls/sys_enter_memfd_create")
 int handle_memfd_create(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
