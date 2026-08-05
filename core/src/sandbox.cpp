@@ -160,7 +160,8 @@ setuid(target_uid);
 }
 
 //ENGINE LAUNCHER
-int Sandbox::run(const std::string& command, const std::vector<std::string>& args) {
+int Sandbox::run(const std::string& command, const std::vector<std::string>& args, std::function<void(pid_t)> on_spawn) {
+    
     umount2("/tmp/shadow_jail", MNT_DETACH);
 
     char* stack = new char[STACK_SIZE];
@@ -179,6 +180,7 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
 
     if (child_pid == -1) { delete[] stack; return -1; }
     std::cout << "[Shadow] Sandbox created. Host mapped PID: " << child_pid << std::endl;
+    if (on_spawn) on_spawn(child_pid);
 
 
     //running as real root

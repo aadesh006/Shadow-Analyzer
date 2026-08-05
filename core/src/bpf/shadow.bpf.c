@@ -10,12 +10,13 @@
 char LICENSE[] SEC("license") = "GPL";
 
 struct event_t {
-    u32  type;          // 1=network, 2=lsm_block, 3=process
+    u32  type;          // 1=network, 2=lsm_block, 3=process, 4=memfd, 5=connect_blocked
     u32  pid;
     u32  ppid;
     u32  dest_ip;       // IPv4 destination (network byte order)
     u16  dest_port;     // destination port (host byte order)
     u16  family;        // AF_INET=2
+    u64  ts_ns;
     char filename[256]; // file path or binary path
     char comm[16];      // process name that triggered event
 };
@@ -38,10 +39,38 @@ struct {
     __type(value, u32);             // 1 = block
 } blocklist SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key,   u32);   // IPv4 address, network byte order
+    __type(value, u32);   // 1 = block
+} ip_blocklist SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} sandbox_ns SEC(".maps");
+
+static __always_inline int is_in_sandbox(void)
+{
+    u32 zero = 0;
+    u64 *target_ns = bpf_map_lookup_elem(&sandbox_ns, &zero);
+    if (!target_ns || *target_ns == 0)
+        return 0; // sandbox not registered yet — treat as not-in-sandbox, fail closed
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u64 current_ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children, ns.inum);
+
+    return current_ns == *target_ns;
+}
+
 
 //Process Tracking (execve)
 SEC("tp/syscalls/sys_enter_execve")
 int handle_execve(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
@@ -61,6 +90,7 @@ int handle_execve(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tp/syscalls/sys_enter_execveat")
 int handle_execveat(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
@@ -82,6 +112,7 @@ int handle_execveat(struct trace_event_raw_sys_enter *ctx) {
 //Network Connection Tracking
 SEC("tracepoint/syscalls/sys_enter_connect")
 int handle_connect(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     struct sockaddr sa = {};
@@ -146,6 +177,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("lsm/file_open")
 int BPF_PROG(shadow_file_open, struct file *file) {
+    if (!is_in_sandbox()) return 0;
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     if (pid < 10) return 0;
 
@@ -190,8 +222,41 @@ int BPF_PROG(shadow_file_open, struct file *file) {
     return 0;
 }
 
+SEC("lsm/socket_connect")
+int BPF_PROG(shadow_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen, int ret)
+{
+    if (!is_in_sandbox()) return 0;
+    if (ret != 0) return ret;
+
+    if (address->sa_family != AF_INET) return 0;
+
+    struct sockaddr_in *addr_in = (struct sockaddr_in *)address;
+    u32 dest_ip = addr_in->sin_addr.s_addr;
+
+    u32 *blocked = bpf_map_lookup_elem(&ip_blocklist, &dest_ip);
+    if (blocked && *blocked == 1) {
+        u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+        struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (e) {
+            e->type = 5; // CONNECT_BLOCKED
+            e->pid = pid;
+            e->dest_ip = dest_ip;
+            e->family = AF_INET;
+            e->ts_ns = bpf_ktime_get_ns();
+            bpf_get_current_comm(&e->comm, sizeof(e->comm));
+            bpf_ringbuf_submit(e, 0);
+        }
+        bpf_printk("[SHADOW-NET] BLOCKED connect to known-malicious IP by PID %d\n", pid);
+        return -EPERM;
+    }
+
+    return 0;
+}
+
 SEC("tp/syscalls/sys_enter_memfd_create")
 int handle_memfd_create(struct trace_event_raw_sys_enter *ctx) {
+    if (!is_in_sandbox()) return 0;
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 

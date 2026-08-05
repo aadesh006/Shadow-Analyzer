@@ -64,7 +64,10 @@ if (!target.empty() && target[0] == '/') {
         // std::cout << "[Shadow] Invoking Behavioral Parser..." << std::endl;
         // Parser parser;
         // parser.analyzeLog("shadow_trace.log");
-        int sandbox_status = sandbox.run(pkg_manager, args);
+        int sandbox_status = sandbox.run(pkg_manager, args,
+            [&kernel_observer](pid_t child_pid) {
+                kernel_observer.register_sandbox_pid(child_pid);
+            });
 
         std::cout << "[Shadow] Sweeping ring buffer for final logs..." << std::endl;
         sleep(2); 

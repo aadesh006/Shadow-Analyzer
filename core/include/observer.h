@@ -14,6 +14,7 @@ public:
 
     bool start();
     void stop();
+    void register_sandbox_pid(pid_t pid);
 
     bool        threat_detected = false;
     std::string threat_description;

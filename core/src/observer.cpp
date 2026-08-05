@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <unistd.h>
 
 
 #define COLOR_RESET   "\033[0m"
@@ -26,6 +27,7 @@ struct event_t {
     uint32_t dest_ip;
     uint16_t dest_port;
     uint16_t family;
+    uint64_t ts_ns;
     char     filename[256];
     char     comm[16];
 };
@@ -90,6 +92,71 @@ static void inject_dynamic_rules(struct shadow_bpf *skel) {
               << " rules injected into Ring 0 kernel map." << std::endl;
 }
 
+void Observer::register_sandbox_pid(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/ns/pid", pid);
+
+    char link_target[256];
+    ssize_t len = readlink(path, link_target, sizeof(link_target) - 1);
+    if (len == -1) {
+        std::cerr << COLOR_RED << "[Shadow] Failed to read sandbox PID namespace." << COLOR_RESET << std::endl;
+        return;
+    }
+    link_target[len] = '\0';
+
+    uint64_t ns_inum = 0;
+    std::string s(link_target);
+    size_t start = s.find('[');
+    size_t end = s.find(']');
+    if (start != std::string::npos && end != std::string::npos) {
+        ns_inum = std::stoull(s.substr(start + 1, end - start - 1));
+    }
+
+    if (ns_inum == 0) {
+        std::cerr << COLOR_RED << "[Shadow] Could not parse sandbox namespace ID." << COLOR_RESET << std::endl;
+        return;
+    }
+
+    uint32_t key = 0;
+    int map_fd = bpf_map__fd(skel->maps.sandbox_ns);
+    if (bpf_map_update_elem(map_fd, &key, &ns_inum, BPF_ANY) == 0) {
+        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                  << " Sandbox namespace registered: " << ns_inum << std::endl;
+    }
+}
+
+static void inject_ip_blocklist(struct shadow_bpf *skel) {
+    std::vector<std::string> paths = {
+        "/etc/shadow-analyzer/shadow_ip_blocklist.conf",
+        "../shadow_ip_blocklist.conf",
+        "./shadow_ip_blocklist.conf"
+    };
+
+    std::ifstream infile;
+    for (const auto& path : paths) {
+        infile.open(path);
+        if (infile.is_open()) break;
+    }
+    if (!infile.is_open()) return; // no IP rules — not fatal, file blocklist still works
+
+    int map_fd = bpf_map__fd(skel->maps.ip_blocklist);
+    std::string line;
+    int count = 0;
+
+    while (std::getline(infile, line)) {
+        if (line.empty() || line[0] == '#') continue;
+
+        struct in_addr addr;
+        if (inet_pton(AF_INET, line.c_str(), &addr) != 1) continue; // skip malformed lines
+
+        uint32_t key = addr.s_addr;
+        uint32_t value = 1;
+        if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) == 0) count++;
+    }
+
+    std::cout << "[Shadow] " << count << " known-malicious IPs loaded into Ring 0 block map." << std::endl;
+}
+
 bool Observer::start() {
 
     skel = shadow_bpf__open();
@@ -112,6 +179,7 @@ bool Observer::start() {
 
     //Inject rules into the loaded skeleton's maps
     inject_dynamic_rules(skel);
+    inject_ip_blocklist(skel);
 
     //Attach hooks to the kernel
     if (shadow_bpf__attach(skel) != 0) {
@@ -300,6 +368,30 @@ if (comm == "systemd-resolve" ||
     self->threat_detected    = true;
     self->threat_description = "memfd_create: fileless execution attempt by " 
                                + std::string(e->comm);
+    }
+
+    else if (e->type == 5) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+        uint64_t latency_ns = now_ns - e->ts_ns;
+
+        struct in_addr addr;
+        addr.s_addr = e->dest_ip;
+
+        std::cout << "\n  " COLOR_RED
+                  << "╔══════════════════════════════════════════╗\n"
+                  << "  ║     CONNECTION BLOCKED AT RING 0         ║\n"
+                  << "  ╚══════════════════════════════════════════╝"
+                  << COLOR_RESET << "\n"
+                  << "  Process:   " << e->comm << " (PID " << e->pid << ")\n"
+                  << "  Attempted: connect to " << inet_ntoa(addr) << "\n"
+                  << "  Result:    EPERM — connection never established\n"
+                  << "  Latency:   " << latency_ns << "ns (kernel timestamp to userspace read)\n"
+                  << std::endl;
+
+        self->threat_detected    = true;
+        self->threat_description = "C2 connection blocked to " + std::string(inet_ntoa(addr));
     }
 
     return 0;
