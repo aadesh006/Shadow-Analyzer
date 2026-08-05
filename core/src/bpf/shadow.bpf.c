@@ -10,12 +10,13 @@
 char LICENSE[] SEC("license") = "GPL";
 
 struct event_t {
-    u32  type;          // 1=network, 2=lsm_block, 3=process
+    u32  type;          // 1=network, 2=lsm_block, 3=process, 4=memfd, 5=connect_blocked
     u32  pid;
     u32  ppid;
     u32  dest_ip;       // IPv4 destination (network byte order)
     u16  dest_port;     // destination port (host byte order)
     u16  family;        // AF_INET=2
+    u64  ts_ns;
     char filename[256]; // file path or binary path
     char comm[16];      // process name that triggered event
 };
@@ -37,6 +38,13 @@ struct {
     __type(key,   struct path_key);
     __type(value, u32);             // 1 = block
 } blocklist SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key,   u32);   // IPv4 address, network byte order
+    __type(value, u32);   // 1 = block
+} ip_blocklist SEC(".maps");
 
 
 //Process Tracking (execve)
@@ -187,6 +195,37 @@ int BPF_PROG(shadow_file_open, struct file *file) {
         bpf_printk("[SHADOW-LSM] BLOCKED %s/%s by PID %d\n", parentname, key.name, pid);
         return -EPERM;
     }
+    return 0;
+}
+
+SEC("lsm/socket_connect")
+int BPF_PROG(shadow_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen, int ret)
+{
+    if (ret != 0) return ret;
+
+    if (address->sa_family != AF_INET) return 0;
+
+    struct sockaddr_in *addr_in = (struct sockaddr_in *)address;
+    u32 dest_ip = addr_in->sin_addr.s_addr;
+
+    u32 *blocked = bpf_map_lookup_elem(&ip_blocklist, &dest_ip);
+    if (blocked && *blocked == 1) {
+        u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+        struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (e) {
+            e->type = 5; // CONNECT_BLOCKED
+            e->pid = pid;
+            e->dest_ip = dest_ip;
+            e->family = AF_INET;
+            e->ts_ns = bpf_ktime_get_ns();
+            bpf_get_current_comm(&e->comm, sizeof(e->comm));
+            bpf_ringbuf_submit(e, 0);
+        }
+        bpf_printk("[SHADOW-NET] BLOCKED connect to known-malicious IP by PID %d\n", pid);
+        return -EPERM;
+    }
+
     return 0;
 }
 
