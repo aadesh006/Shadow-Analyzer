@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <unistd.h>
 
 
 #define COLOR_RESET   "\033[0m"
@@ -89,6 +90,39 @@ static void inject_dynamic_rules(struct shadow_bpf *skel) {
 
     std::cout << "[Shadow] " << count
               << " rules injected into Ring 0 kernel map." << std::endl;
+}
+
+void Observer::register_sandbox_pid(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/ns/pid", pid);
+
+    char link_target[256];
+    ssize_t len = readlink(path, link_target, sizeof(link_target) - 1);
+    if (len == -1) {
+        std::cerr << COLOR_RED << "[Shadow] Failed to read sandbox PID namespace." << COLOR_RESET << std::endl;
+        return;
+    }
+    link_target[len] = '\0';
+
+    uint64_t ns_inum = 0;
+    std::string s(link_target);
+    size_t start = s.find('[');
+    size_t end = s.find(']');
+    if (start != std::string::npos && end != std::string::npos) {
+        ns_inum = std::stoull(s.substr(start + 1, end - start - 1));
+    }
+
+    if (ns_inum == 0) {
+        std::cerr << COLOR_RED << "[Shadow] Could not parse sandbox namespace ID." << COLOR_RESET << std::endl;
+        return;
+    }
+
+    uint32_t key = 0;
+    int map_fd = bpf_map__fd(skel->maps.sandbox_ns);
+    if (bpf_map_update_elem(map_fd, &key, &ns_inum, BPF_ANY) == 0) {
+        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                  << " Sandbox namespace registered: " << ns_inum << std::endl;
+    }
 }
 
 static void inject_ip_blocklist(struct shadow_bpf *skel) {
