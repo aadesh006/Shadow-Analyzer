@@ -1,4 +1,4 @@
-#CMake / C++ Core
+# ─── CMake / Build ───────────────────────────────────────────────────────────
 build/
 CMakeCache.txt
 CMakeFiles/
@@ -11,11 +11,29 @@ compile_commands.json
 *.so
 *.out
 
-# Shadow binaries
+# ─── Shadow binaries ─────────────────────────────────────────────────────────
 /core/shadow
 /bin/
 
-#OS & IDE
+# ─── Generated eBPF Artifacts ────────────────────────────────────────────────
+# Regenerated at build time from shadow.bpf.c — do not commit
+core/src/bpf/shadow.bpf.o
+core/src/bpf/shadow.skel.h
+core/src/bpf/vmlinux.h
+
+# ─── Tests ───────────────────────────────────────────────────────────────────
+tests/
+test-packages/
+
+# ─── Runtime Temp Files ──────────────────────────────────────────────────────
+# Created by Shadow at runtime — never need to be committed
+/tmp/shadow_jail/
+/tmp/shadow_overlay/
+/tmp/shadow_diff_*.log
+/tmp/.npm-*/
+/tmp/sandbox_pkg/
+
+# ─── OS & IDE ────────────────────────────────────────────────────────────────
 .DS_Store
 .vscode/
 .idea/
@@ -23,12 +41,4 @@ compile_commands.json
 *.swo
 *~
 
-# IDE and OS files
-.vscode/
-.DS_Store
-
-# Generated eBPF Artifacts
-core/src/bpf/shadow.bpf.o
-core/src/bpf/shadow.skel.h
-core/src/bpf/vmlinux.h
-*.tgz
+shadow-dev-session.json
