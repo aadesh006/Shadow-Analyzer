@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <fstream>
+#include <dirent.h>
+#include <ftw.h>
 #include "../include/sandbox.h"
 
 #define COLOR_RESET   "\033[0m"
@@ -18,7 +20,16 @@
 #define COLOR_CYAN    "\033[1;36m"
 #define COLOR_MAGENTA "\033[1;35m"
 
-const int STACK_SIZE = 1024 * 1024; 
+const int STACK_SIZE = 1024 * 1024;
+
+// Host-side paths for OverlayFS layers.
+// These are created on the host before clone() so they exist in the mount
+// namespace the child inherits before pivot_root severs the old root.
+static const char* OVERLAY_BASE  = "/tmp/shadow_overlay";
+static const char* OVERLAY_LOWER = "/tmp/shadow_overlay/lower";  // empty read-only base
+static const char* OVERLAY_UPPER = "/tmp/shadow_overlay/upper";  // captures all writes
+static const char* OVERLAY_WORK  = "/tmp/shadow_overlay/work";   // required by overlayfs
+static const char* OVERLAY_MERGE = "/tmp/shadow_overlay/merge";  // the merged /tmp mount point
 
 struct ChildArgs {
     const char* command;
@@ -30,49 +41,96 @@ bool construct_prison(const char *target_path);
 Sandbox::Sandbox() {}
 Sandbox::~Sandbox() {}
 
+// ---------------------------------------------------------------------------
+// setup_overlay_dirs()
+//
+// Creates the four OverlayFS directories on the host side.
+// Called from Sandbox::run() (host process, before clone()) so the dirs are
+// visible inside the child's mount namespace before pivot_root fires.
+// Returns true on success.
+// ---------------------------------------------------------------------------
+static bool setup_overlay_dirs() {
+    // Clean up any leftover state from a previous run
+    umount2(OVERLAY_MERGE, MNT_DETACH);
 
+    mkdir(OVERLAY_BASE,  0700);
+    mkdir(OVERLAY_LOWER, 0700);
+    mkdir(OVERLAY_UPPER, 0700);
+    mkdir(OVERLAY_WORK,  0700);
+    mkdir(OVERLAY_MERGE, 0700);
+
+    // Mount OverlayFS: lower=empty dir, upper captures writes, merge is the view
+    std::string opts = std::string("lowerdir=")  + OVERLAY_LOWER +
+                       ",upperdir="  + OVERLAY_UPPER +
+                       ",workdir="   + OVERLAY_WORK;
+
+    if (mount("overlay", OVERLAY_MERGE, "overlay", 0, opts.c_str()) != 0) {
+        std::cerr << COLOR_YELLOW
+                  << "[Shadow] OverlayFS setup failed — filesystem diff unavailable. "
+                  << "Analysis will proceed without shadow diff."
+                  << COLOR_RESET << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// construct_prison()
+//
+// Called from inside the child namespace after pivot_root.
+// Builds the read-only bind-mount tree under /tmp/shadow_jail, mounts
+// the OverlayFS merge dir as /tmp (so all package writes land in upper),
+// then pivots root into the jail.
+// ---------------------------------------------------------------------------
 bool construct_prison(const char *target_path) {
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) return false;
+
     const char* jail_dir = "/tmp/shadow_jail";
-    
     mkdir(jail_dir, 0777);
     if (mount(jail_dir, jail_dir, "bind", MS_BIND | MS_REC, NULL) == -1) return false;
 
-
     std::vector<std::string> sys_dirs = {
-        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/proc", "/tmp", "/home", "/run" 
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc",
+        "/dev", "/proc", "/tmp", "/home", "/run"
     };
-
     for (const auto& dir : sys_dirs) {
-        std::string target = std::string(jail_dir) + dir;
-        mkdir(target.c_str(), 0755);
+        mkdir((std::string(jail_dir) + dir).c_str(), 0755);
     }
 
     std::vector<std::string> ro_binds = {
         "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/run"
     };
-    
     for (const auto& dir : ro_binds) {
         std::string target = std::string(jail_dir) + dir;
-        if (access(dir.c_str(), F_OK) == 0) { 
+        if (access(dir.c_str(), F_OK) == 0) {
             mount(dir.c_str(), target.c_str(), "bind", MS_BIND | MS_REC, NULL);
-            mount(dir.c_str(), target.c_str(), "bind", MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+            mount(dir.c_str(), target.c_str(), "bind",
+                  MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
         }
     }
 
     std::string home_target = std::string(jail_dir) + "/home";
-
     if (access("/home", F_OK) == 0) {
         mount("/home", home_target.c_str(), "bind", MS_BIND | MS_REC, NULL);
-        mount("/home", home_target.c_str(), "bind", 
-          MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+        mount("/home", home_target.c_str(), "bind",
+              MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
     }
 
-    std::string proc_target = std::string(jail_dir) + "/proc";
-    mount("proc", proc_target.c_str(), "proc", 0, NULL);
-    
+    mount("proc", (std::string(jail_dir) + "/proc").c_str(), "proc", 0, NULL);
+
+    // Mount /tmp — prefer the OverlayFS merge point so writes are tracked.
+    // Fall back to a plain tmpfs if OverlayFS setup failed on the host side.
     std::string tmp_target = std::string(jail_dir) + "/tmp";
-    mount("tmpfs", tmp_target.c_str(), "tmpfs", 0, "size=500m,mode=777");
+    if (access(OVERLAY_MERGE, F_OK) == 0) {
+        if (mount(OVERLAY_MERGE, tmp_target.c_str(), "bind", MS_BIND | MS_REC, NULL) == 0) {
+            std::cout << "  [Prison] OverlayFS /tmp mounted — filesystem diff active." << std::endl;
+        } else {
+            // Bind failed (e.g. overlayfs not mounted) — fall back to tmpfs
+            mount("tmpfs", tmp_target.c_str(), "tmpfs", 0, "size=500m,mode=777");
+        }
+    } else {
+        mount("tmpfs", tmp_target.c_str(), "tmpfs", 0, "size=500m,mode=777");
+    }
 
     const char* put_old = "/tmp/shadow_jail/old_root";
     mkdir(put_old, 0777);
@@ -80,7 +138,7 @@ bool construct_prison(const char *target_path) {
 
     chdir("/");
 
-// Copy ANY target file into the jail's /tmp
+    // Copy tarball into the jail's /tmp if the target is a local file path
     if (target_path != nullptr && target_path[0] == '/') {
         std::string filename = std::string(target_path);
         filename = filename.substr(filename.find_last_of('/') + 1);
@@ -90,13 +148,12 @@ bool construct_prison(const char *target_path) {
 
         std::ifstream in(src, std::ios::binary);
         std::ofstream out(dst, std::ios::binary);
-        
         if (in && out) {
             out << in.rdbuf();
             chmod(dst.c_str(), 0644);
             std::cout << "  [Prison] Tarball staged natively: " << dst << std::endl;
         } else {
-            std::cout << "  [Prison] ERROR: Failed to read from " << src << " or write to " << dst << std::endl;
+            std::cout << "  [Prison] ERROR: Failed to stage " << src << std::endl;
         }
     }
 
@@ -106,45 +163,42 @@ bool construct_prison(const char *target_path) {
     return true;
 }
 
-//CHILD EXECUTION
+// ---------------------------------------------------------------------------
+// CHILD EXECUTION
+// ---------------------------------------------------------------------------
 int Sandbox::child_entry(void* arg) {
     ChildArgs* args = static_cast<ChildArgs*>(arg);
-    
 
     std::cout << "  [Prison] Sandbox Paused. Awaiting identity injection from Host..." << std::endl;
     sleep(1);
 
-    // Build the void as Root, passing the target path
     if (!construct_prison(args->argv[2])) return -1;
-    
+
     std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
     if (chdir("/tmp") == -1) return -1;
 
-// THE SECURE DOWNGRADE
-const char* sudo_uid = getenv("SUDO_UID");
-const char* sudo_gid = getenv("SUDO_GID");
-int target_uid = sudo_uid ? atoi(sudo_uid) : 1000;
-int target_gid = sudo_gid ? atoi(sudo_gid) : 1000;
+    const char* sudo_uid = getenv("SUDO_UID");
+    const char* sudo_gid = getenv("SUDO_GID");
+    int target_uid = sudo_uid ? atoi(sudo_uid) : 1000;
+    int target_gid = sudo_gid ? atoi(sudo_gid) : 1000;
 
-chown("/tmp", target_uid, target_gid);
+    chown("/tmp", target_uid, target_gid);
 
-// Create package.json WHILE STILL ROOT so npm runs postinstall
-const char* ctx = "{\"name\":\"shadow-sandbox\",\"version\":\"1.0.0\"}\n";
-int pfd = open("/tmp/package.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-if (pfd >= 0) {
-    write(pfd, ctx, strlen(ctx));
-    close(pfd);
-    chown("/tmp/package.json", target_uid, target_gid);
-    std::cout << "  [Prison] Sandbox context created." << std::endl;
-}
+    // Create package.json while still root so npm executes postinstall hooks
+    const char* ctx = "{\"name\":\"shadow-sandbox\",\"version\":\"1.0.0\"}\n";
+    int pfd = open("/tmp/package.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (pfd >= 0) {
+        write(pfd, ctx, strlen(ctx));
+        close(pfd);
+        chown("/tmp/package.json", target_uid, target_gid);
+        std::cout << "  [Prison] Sandbox context created." << std::endl;
+    }
 
-// NOW drop privileges
-setgid(target_gid);
-setuid(target_uid);
+    // Drop privileges
+    setgid(target_gid);
+    setuid(target_uid);
 
-
-    std::cout << "  [Prison] Sandbox Identity downgraded securely to UID: " << getuid() << std::endl;
-
+    std::cout << "  [Prison] Sandbox identity downgraded to UID: " << getuid() << std::endl;
 
     unsetenv("SUDO_UID");
     unsetenv("SUDO_GID");
@@ -156,13 +210,24 @@ setuid(target_uid);
         std::cerr << "[Sandbox] execvp failed: " << strerror(errno) << std::endl;
         return -1;
     }
-    return 0; 
+    return 0;
 }
 
-//ENGINE LAUNCHER
-int Sandbox::run(const std::string& command, const std::vector<std::string>& args, std::function<void(pid_t)> on_spawn) {
-    
+// ---------------------------------------------------------------------------
+// ENGINE LAUNCHER
+// ---------------------------------------------------------------------------
+int Sandbox::run(const std::string& command, const std::vector<std::string>& args,
+                 std::function<void(pid_t)> on_spawn) {
+
+    // Clean up any previous jail
     umount2("/tmp/shadow_jail", MNT_DETACH);
+
+    // Set up OverlayFS dirs on the host before spawning the child.
+    // The child inherits these paths in its mount namespace.
+    bool overlay_ok = setup_overlay_dirs();
+    if (overlay_ok) {
+        overlay_upper_dir = OVERLAY_UPPER;
+    }
 
     char* stack = new char[STACK_SIZE];
     char* stack_top = stack + STACK_SIZE;
@@ -170,65 +235,62 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     std::vector<char*> c_args;
     c_args.push_back(const_cast<char*>(command.c_str()));
     for (const auto& arg : args) c_args.push_back(const_cast<char*>(arg.c_str()));
-    c_args.push_back(nullptr); 
+    c_args.push_back(nullptr);
 
     ChildArgs child_args = { command.c_str(), c_args.data() };
     std::cout << "[Shadow] Spawning isolated namespaces" << std::endl;
 
-    int flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER; 
+    int flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER;
     pid_t child_pid = clone(child_entry, stack_top, flags, &child_args);
 
     if (child_pid == -1) { delete[] stack; return -1; }
     std::cout << "[Shadow] Sandbox created. Host mapped PID: " << child_pid << std::endl;
     if (on_spawn) on_spawn(child_pid);
 
-
-    //running as real root
+    // Write UID/GID maps to complete CLONE_NEWUSER setup
     const char* sudo_uid = getenv("SUDO_UID");
     const char* sudo_gid = getenv("SUDO_GID");
     std::string uid_str = sudo_uid ? sudo_uid : "1000";
     std::string gid_str = sudo_gid ? sudo_gid : "1000";
 
-    // Map Sandbox 0 -> Host 0 AND Sandbox 1000 -> Host 1000
     std::string uid_map = "0 0 1\n" + uid_str + " " + uid_str + " 1\n";
     std::string gid_map = "0 0 1\n" + gid_str + " " + gid_str + " 1\n";
 
     char path[256];
-    
-    sprintf(path, "/proc/%d/uid_map", child_pid);
+
+    snprintf(path, sizeof(path), "/proc/%d/uid_map", child_pid);
     int fd = open(path, O_WRONLY);
-    write(fd, uid_map.c_str(), uid_map.length());
-    close(fd);
+    if (fd >= 0) { write(fd, uid_map.c_str(), uid_map.size()); close(fd); }
 
-    sprintf(path, "/proc/%d/setgroups", child_pid);
+    snprintf(path, sizeof(path), "/proc/%d/setgroups", child_pid);
     fd = open(path, O_WRONLY);
-    write(fd, "deny", 4);
-    close(fd);
+    if (fd >= 0) { write(fd, "deny", 4); close(fd); }
 
-    sprintf(path, "/proc/%d/gid_map", child_pid);
+    snprintf(path, sizeof(path), "/proc/%d/gid_map", child_pid);
     fd = open(path, O_WRONLY);
-    write(fd, gid_map.c_str(), gid_map.length());
-    close(fd);
+    if (fd >= 0) { write(fd, gid_map.c_str(), gid_map.size()); close(fd); }
 
-int status;
-int timeout_secs = 60; // kill sandbox after 60 seconds
-time_t start = time(nullptr);
-pid_t result = 0;
+    // Wait for sandbox to finish, with 60s timeout
+    int status;
+    int timeout_secs = 60;
+    time_t start = time(nullptr);
+    pid_t result = 0;
 
-while (result == 0) {
-    result = waitpid(child_pid, &status, WNOHANG);
-    if (result == 0) {
-        if (time(nullptr) - start >= timeout_secs) {
-            std::cout << COLOR_YELLOW 
-                      << "[Shadow] Sandbox timeout — killing analysis."
-                      << COLOR_RESET << std::endl;
-            kill(child_pid, SIGKILL);
-            waitpid(child_pid, &status, 0);
-            return 124;
+    while (result == 0) {
+        result = waitpid(child_pid, &status, WNOHANG);
+        if (result == 0) {
+            if (time(nullptr) - start >= timeout_secs) {
+                std::cout << COLOR_YELLOW
+                          << "[Shadow] Sandbox timeout — killing analysis."
+                          << COLOR_RESET << std::endl;
+                kill(child_pid, SIGKILL);
+                waitpid(child_pid, &status, 0);
+                delete[] stack;
+                return 124;
+            }
+            usleep(100000);
         }
-        usleep(100000); // poll every 100ms
     }
-}
 
     std::cout << "[Shadow] Sandbox execution completed." << std::endl;
 
