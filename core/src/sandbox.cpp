@@ -50,9 +50,46 @@ Sandbox::~Sandbox() {}
 // Returns true on success.
 // ---------------------------------------------------------------------------
 static bool setup_overlay_dirs() {
-    // Clean up any leftover state from a previous run
+    // Unmount any previous overlay merge first
     umount2(OVERLAY_MERGE, MNT_DETACH);
 
+    // Wipe upper and work dirs completely — stale content from a previous run
+    // causes npm to see packages as already installed and skip preinstall hooks.
+    // We use nftw via system() here for simplicity since this runs on the host
+    // before clone(), not inside the sandbox.
+    if (access(OVERLAY_UPPER, F_OK) == 0) {
+        // Remove everything inside upper but keep the dir itself
+        DIR* d = opendir(OVERLAY_UPPER);
+        if (d) {
+            struct dirent* ent;
+            while ((ent = readdir(d)) != nullptr) {
+                std::string name(ent->d_name);
+                if (name == "." || name == "..") continue;
+                std::string full = std::string(OVERLAY_UPPER) + "/" + name;
+                // Use shell rm -rf to handle nested dirs without needing nftw
+                std::string cmd = "rm -rf '" + full + "'";
+                system(cmd.c_str());
+            }
+            closedir(d);
+        }
+    }
+
+    if (access(OVERLAY_WORK, F_OK) == 0) {
+        DIR* d = opendir(OVERLAY_WORK);
+        if (d) {
+            struct dirent* ent;
+            while ((ent = readdir(d)) != nullptr) {
+                std::string name(ent->d_name);
+                if (name == "." || name == "..") continue;
+                std::string full = std::string(OVERLAY_WORK) + "/" + name;
+                std::string cmd = "rm -rf '" + full + "'";
+                system(cmd.c_str());
+            }
+            closedir(d);
+        }
+    }
+
+    // Create dirs (no-op if already exist)
     mkdir(OVERLAY_BASE,  0700);
     mkdir(OVERLAY_LOWER, 0700);
     mkdir(OVERLAY_UPPER, 0700);
@@ -175,7 +212,6 @@ int Sandbox::child_entry(void* arg) {
     if (!construct_prison(args->argv[2])) return -1;
 
     std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
-    if (chdir("/tmp") == -1) return -1;
 
     const char* sudo_uid = getenv("SUDO_UID");
     const char* sudo_gid = getenv("SUDO_GID");
@@ -184,13 +220,21 @@ int Sandbox::child_entry(void* arg) {
 
     chown("/tmp", target_uid, target_gid);
 
+    // Use a dedicated install subdir so npm always sees a fresh empty project.
+    // Running from /tmp directly caused "up to date" because OverlayFS persists
+    // package.json from the previous run in the upper layer.
+    const char* install_dir = "/tmp/sandbox_pkg";
+    mkdir(install_dir, 0755);
+    chown(install_dir, target_uid, target_gid);
+
     // Create package.json while still root so npm executes postinstall hooks
     const char* ctx = "{\"name\":\"shadow-sandbox\",\"version\":\"1.0.0\"}\n";
-    int pfd = open("/tmp/package.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    std::string pkg_json_path = std::string(install_dir) + "/package.json";
+    int pfd = open(pkg_json_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (pfd >= 0) {
         write(pfd, ctx, strlen(ctx));
         close(pfd);
-        chown("/tmp/package.json", target_uid, target_gid);
+        chown(pkg_json_path.c_str(), target_uid, target_gid);
         std::cout << "  [Prison] Sandbox context created." << std::endl;
     }
 
@@ -199,6 +243,8 @@ int Sandbox::child_entry(void* arg) {
     setuid(target_uid);
 
     std::cout << "  [Prison] Sandbox identity downgraded to UID: " << getuid() << std::endl;
+
+    if (chdir(install_dir) == -1) return -1;
 
     unsetenv("SUDO_UID");
     unsetenv("SUDO_GID");
