@@ -113,13 +113,20 @@ bool ThreatIntel::is_trusted_cdn(const std::string& ip_or_host) {
 // when the IP is dedicated infrastructure — not shared hosting.
 // ---------------------------------------------------------------------------
 bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
-    // Known malicious domains and substrings
+    // Known malicious domains — checked as suffix with dot-boundary to avoid
+    // false positives from substring matching (e.g. "notngrok.io" must not
+    // match "ngrok.io").
+    //
+    // For each entry we check three forms:
+    //   exact match          : ip_or_host == entry
+    //   subdomain match      : ip_or_host ends with "." + entry
+    //   path/port suffix     : ip_or_host starts with entry (for raw domain checks)
     static const char* malicious_domains[] = {
         // Confirmed npm supply chain attack C2
-        "sfrclak.com",           // axios attack C2 (March 2026)
-        "git-tanstack.com",      // TanStack attack C2 (May 2026)
+        "sfrclak.com",
+        "git-tanstack.com",
 
-        // Tunnel / reverse-proxy services — almost always exfil in postinstall context
+        // Tunnel / reverse-proxy services
         "ngrok.io",
         "ngrok-free.app",
         "localtunnel.me",
@@ -129,13 +136,13 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
         "bore.pub",
         "telebit.io",
 
-        // Webhook / data capture services — legitimate in CI, suspicious in npm install
+        // Webhook / data capture services
         "requestbin.net",
         "requestbin.com",
         "webhook.site",
         "pipedream.net",
         "burpcollaborator.net",
-        "oastify.com",          // Burp Collaborator new domain
+        "oastify.com",
         "interact.sh",
         "canarytokens.com",
         "webhook.run",
@@ -148,22 +155,33 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
 
         nullptr
     };
+
     for (int i = 0; malicious_domains[i] != nullptr; i++) {
-        if (ip_or_host.find(malicious_domains[i]) != std::string::npos)
+        const std::string entry(malicious_domains[i]);
+
+        // Exact match: "ngrok.io" == "ngrok.io"
+        if (ip_or_host == entry)
             return true;
+
+        // Subdomain match: "abc.ngrok.io" ends with ".ngrok.io"
+        const std::string dotted = "." + entry;
+        if (ip_or_host.size() > dotted.size()) {
+            if (ip_or_host.compare(ip_or_host.size() - dotted.size(),
+                                   dotted.size(), dotted) == 0)
+                return true;
+        }
     }
 
     // Known malicious raw IPs (dedicated C2 infrastructure only)
-    // These are confirmed — do NOT add shared hosting IPs here.
     static const char* malicious_ips[] = {
-        "185.220.101.47",   // Tor exit / C2 relay — seen in multiple npm attacks
+        "185.220.101.47",
         "185.220.101.34",
         "185.220.101.35",
         "185.220.101.36",
         "185.220.101.48",
-        "45.142.212.100",   // Known C2 hosting (bulletproof AS)
-        "91.92.255.80",     // Malware C2 — flagged by multiple threat feeds
-        "194.165.16.29",    // Known malware distribution host
+        "45.142.212.100",
+        "91.92.255.80",
+        "194.165.16.29",
         nullptr
     };
     for (int i = 0; malicious_ips[i] != nullptr; i++) {
