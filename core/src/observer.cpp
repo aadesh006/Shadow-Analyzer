@@ -93,6 +93,7 @@ static void inject_dynamic_rules(struct shadow_bpf *skel) {
 }
 
 void Observer::register_sandbox_pid(pid_t pid) {
+    // --- Primary: register PID namespace inum ---
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/ns/pid", pid);
 
@@ -118,10 +119,20 @@ void Observer::register_sandbox_pid(pid_t pid) {
     }
 
     uint32_t key = 0;
-    int map_fd = bpf_map__fd(skel->maps.sandbox_ns);
-    if (bpf_map_update_elem(map_fd, &key, &ns_inum, BPF_ANY) == 0) {
+    int ns_map_fd = bpf_map__fd(skel->maps.sandbox_ns);
+    if (bpf_map_update_elem(ns_map_fd, &key, &ns_inum, BPF_ANY) == 0) {
         std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
-                  << " Sandbox namespace registered: " << ns_inum << std::endl;
+                  << " Sandbox PID namespace registered: inum=" << ns_inum << std::endl;
+    }
+
+    // --- Secondary: register host-side sandbox root PID ---
+    // This lets the kernel-side ancestor walk catch any nested unshare(CLONE_NEWPID)
+    // calls a malicious package might use to escape the namespace-inum check.
+    uint32_t host_pid = static_cast<uint32_t>(pid);
+    int pid_map_fd = bpf_map__fd(skel->maps.sandbox_root_pid);
+    if (bpf_map_update_elem(pid_map_fd, &key, &host_pid, BPF_ANY) == 0) {
+        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                  << " Sandbox root PID registered: host_pid=" << host_pid << std::endl;
     }
 }
 
@@ -270,32 +281,50 @@ if (comm == "systemd-resolve" ||
     if (e->family == 2) {
         struct in_addr addr;
         addr.s_addr = e->dest_ip;
-        std::string raw_ip = inet_ntoa(addr); // just converts bytes to string, no DNS
+        std::string raw_ip = inet_ntoa(addr);
 
+        // Check raw IP first (fast path — no syscall).
+        // If the IP itself is not on a known-malicious or trusted-CDN list,
+        // attempt a reverse-DNS lookup so domain-based rules in is_malicious()
+        // and is_trusted_cdn() can fire. This is the only place we do DNS and
+        // it only runs for unclassified IPs to avoid latency on CDN traffic.
         bool malicious = ThreatIntel::is_malicious(raw_ip);
         bool trusted   = ThreatIntel::is_trusted_cdn(raw_ip);
+
+        std::string display_host = raw_ip;
+
+        if (!malicious && !trusted) {
+            // Unclassified IP — resolve hostname for domain-based matching
+            std::string hostname = ThreatIntel::resolve_ipv4(raw_ip);
+            if (hostname != raw_ip) {
+                // Resolution succeeded — re-run classification against hostname
+                malicious = ThreatIntel::is_malicious(hostname);
+                trusted   = ThreatIntel::is_trusted_cdn(hostname);
+                display_host = hostname + " (" + raw_ip + ")";
+            }
+        }
 
         if (malicious) {
             std::cout << "  " COLOR_RED "[THREAT]" COLOR_RESET
                       << " C2 callback! PID: " << e->pid
                       << " Process: " << e->comm
-                      << " -> " << raw_ip
+                      << " -> " << display_host
                       << " Port: " << e->dest_port
                       << std::endl;
             self->threat_detected    = true;
-            self->threat_description = "C2 connection to " + raw_ip;
+            self->threat_description = "C2 connection to " + display_host;
 
         } else if (!trusted) {
             std::cout << "  " COLOR_YELLOW "[SUSPICIOUS]" COLOR_RESET
                       << " Non-CDN outbound. PID: " << e->pid
                       << " Process: " << e->comm
-                      << " -> " << raw_ip
+                      << " -> " << display_host
                       << " Port: " << e->dest_port
                       << std::endl;
         } else {
             std::cout << "  " COLOR_GREEN "[NET]" COLOR_RESET
                       << " PID: " << e->pid
-                      << " -> " << raw_ip
+                      << " -> " << display_host
                       << " Port: " << e->dest_port
                       << std::endl;
         }
