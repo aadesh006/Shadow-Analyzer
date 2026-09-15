@@ -46,6 +46,8 @@ struct {
     __type(value, u32);   // 1 = block
 } ip_blocklist SEC(".maps");
 
+// Stores the PID namespace inode number of the sandbox (set by userspace after clone()).
+// Key 0 → sandbox PID namespace inum.
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
@@ -53,17 +55,74 @@ struct {
     __type(value, u64);
 } sandbox_ns SEC(".maps");
 
+// Stores the host-side PID of the sandbox root process (the direct clone() child).
+// Key 0 → host PID of the sandbox root.
+// Used as a secondary filter: any task whose ancestor chain reaches this PID
+// is considered part of the sandbox, even if it spawned a new PID namespace
+// via unshare() (which would escape the namespace-inum check alone).
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);
+} sandbox_root_pid SEC(".maps");
+
+// Walk up at most MAX_DEPTH levels of the process tree looking for the
+// sandbox root PID. Returns 1 if found, 0 otherwise.
+// Depth cap keeps the verifier happy — BPF loops must be bounded.
+#define MAX_ANCESTOR_DEPTH 16
+
+static __always_inline int is_descendant_of_sandbox(u32 target_pid)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    #pragma unroll
+    for (int i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
+        u32 cur_pid = BPF_CORE_READ(task, tgid);
+        if (cur_pid == target_pid)
+            return 1;
+        if (cur_pid <= 1)
+            return 0; // reached init or idle — not in sandbox
+
+        struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+        if (!parent || parent == task)
+            return 0;
+        task = parent;
+    }
+    return 0;
+}
+
+// Primary filter: check if the current task lives in the registered sandbox
+// PID namespace. Secondary filter: check if it is a descendant of the sandbox
+// root PID (catches processes that called unshare(CLONE_NEWPID) to escape
+// the namespace-inum check).
+//
+// Returns 0 (not in sandbox) if neither map has been populated yet — this is
+// the fail-closed behaviour that prevents host process events leaking through
+// during the brief window before register_sandbox_pid() completes.
 static __always_inline int is_in_sandbox(void)
 {
     u32 zero = 0;
+
+    // --- Primary check: PID namespace inum ---
     u64 *target_ns = bpf_map_lookup_elem(&sandbox_ns, &zero);
-    if (!target_ns || *target_ns == 0)
-        return 0; // sandbox not registered yet — treat as not-in-sandbox, fail closed
+    if (target_ns && *target_ns != 0) {
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+        u64 current_ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children, ns.inum);
+        if (current_ns == *target_ns)
+            return 1;
+    }
 
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u64 current_ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children, ns.inum);
+    // --- Secondary check: ancestor PID walk ---
+    // Catches a malicious package that called unshare(CLONE_NEWPID) to create
+    // a nested namespace, which would give it a different ns inum.
+    u32 *root_pid = bpf_map_lookup_elem(&sandbox_root_pid, &zero);
+    if (root_pid && *root_pid != 0) {
+        if (is_descendant_of_sandbox(*root_pid))
+            return 1;
+    }
 
-    return current_ns == *target_ns;
+    return 0;
 }
 
 
@@ -147,18 +206,19 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
     if (port == 0)  return 0;
     if (port == 53) return 0;
 
-    // Loopback: 127.x.x.x — system-internal traffic, never malware C2
+    // Loopback: 127.x.x.x
     if ((ip & 0xFF) == 127) return 0;
 
-    // Private ranges: 192.168.x.x and 10.x.x.x — local network, not C2
-    if ((ip & 0xFFFF) == 0xA8C0) return 0; // 192.168.x.x
-    if ((ip & 0xFF)   == 0x0A)   return 0; // 10.x.x.x
+    // RFC-1918 private ranges — local network, never C2
+    if ((ip & 0xFF)   == 0x0A)   return 0;           // 10.x.x.x
+    if ((ip & 0xFFFF) == 0xA8C0) return 0;           // 192.168.x.x  (0xC0A8 LE)
 
-    if ((ip & 0xFF) == 0x0A) return 0;
-
-    u8 b1 = ip & 0xFF;
-    u8 b2 = (ip >> 8) & 0xFF;
-    if (b1 == 0xAC && b2 >= 0x10 && b2 <= 0x1F) return 0;
+    // 172.16.0.0/12 (172.16.x – 172.31.x)
+    {
+        u8 b1 = ip & 0xFF;
+        u8 b2 = (ip >> 8) & 0xFF;
+        if (b1 == 0xAC && b2 >= 0x10 && b2 <= 0x1F) return 0;
+    }
 
     struct event_t *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
