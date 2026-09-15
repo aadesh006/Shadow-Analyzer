@@ -18,26 +18,31 @@
 #define COLOR_BOLD    "\033[1m"
 
 // ---------------------------------------------------------------------------
-// print_diff()
+// write_diff_log()
 //
-// Walks the OverlayFS upper directory and prints every file the package
-// created or modified during install. Deletions appear as whiteout files
-// (prefixed with ".wh.") in the upper dir — we detect and label them.
+// Walks the OverlayFS upper directory and writes the full filesystem delta
+// to a log file at /tmp/shadow_diff_<pid>.log instead of flooding the
+// terminal. Prints a one-line summary to stdout when done.
 //
 // upper_dir: host-side path to the OverlayFS upper layer.
 // ---------------------------------------------------------------------------
-static void print_diff(const std::string& upper_dir) {
+static void write_diff_log(const std::string& upper_dir) {
     if (upper_dir.empty()) {
         std::cout << COLOR_YELLOW
-                  << "[DIFF] OverlayFS was not available — filesystem diff skipped."
+                  << "[DIFF] OverlayFS not available — filesystem diff skipped."
                   << COLOR_RESET << std::endl;
         return;
     }
 
-    std::cout << "\n[Shadow] ══════════════ FILESYSTEM DELTA ══════════════\n";
-    std::cout << COLOR_BOLD << "[DIFF] Files written or modified by the package:\n" << COLOR_RESET;
+    // Build log path: /tmp/shadow_diff_<pid>.log
+    std::string log_path = "/tmp/shadow_diff_" + std::to_string(getpid()) + ".log";
+    std::ofstream log(log_path);
+    if (!log.is_open()) {
+        std::cerr << COLOR_YELLOW << "[DIFF] Could not open log file: "
+                  << log_path << COLOR_RESET << std::endl;
+        return;
+    }
 
-    // Recursive lambda via std::function to walk the upper dir
     int file_count = 0;
     int del_count  = 0;
 
@@ -54,11 +59,10 @@ static void print_diff(const std::string& upper_dir) {
                 std::string full_path = dir + "/" + name;
                 std::string rel_path  = rel_prefix + "/" + name;
 
-                // OverlayFS whiteout: file was deleted by the package
-                if (name.substr(0, 4) == ".wh.") {
+                // OverlayFS whiteout — file was deleted by the package
+                if (name.size() > 4 && name.substr(0, 4) == ".wh.") {
                     std::string deleted = rel_prefix + "/" + name.substr(4);
-                    std::cout << "  " COLOR_RED "[-] DELETED" COLOR_RESET
-                              << "  " << deleted << std::endl;
+                    log << "[-] DELETED  " << deleted << "\n";
                     del_count++;
                     continue;
                 }
@@ -69,7 +73,6 @@ static void print_diff(const std::string& upper_dir) {
                 if (S_ISDIR(st.st_mode)) {
                     walk(full_path, rel_path);
                 } else {
-                    // Format size
                     std::string size_str;
                     if (st.st_size < 1024)
                         size_str = std::to_string(st.st_size) + "B";
@@ -78,9 +81,7 @@ static void print_diff(const std::string& upper_dir) {
                     else
                         size_str = std::to_string(st.st_size / (1024 * 1024)) + "MB";
 
-                    std::cout << "  " COLOR_GREEN "[+]" COLOR_RESET
-                              << " " << rel_path
-                              << " (" << size_str << ")" << std::endl;
+                    log << "[+] " << rel_path << " (" << size_str << ")\n";
                     file_count++;
                 }
             }
@@ -88,13 +89,13 @@ static void print_diff(const std::string& upper_dir) {
         };
 
     walk(upper_dir, "");
+    log.close();
 
-    if (file_count == 0 && del_count == 0) {
-        std::cout << "  (no filesystem changes detected)" << std::endl;
-    } else {
-        std::cout << "\n  " << file_count << " file(s) written/modified, "
-                  << del_count << " file(s) deleted." << std::endl;
-    }
+    // One-line summary on the terminal
+    std::cout << COLOR_CYAN << "[DIFF]" << COLOR_RESET
+              << " " << file_count << " file(s) written, "
+              << del_count << " deleted."
+              << " Full log: " << log_path << std::endl;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,8 +143,10 @@ int main(int argc, char* argv[]) {
             "--ignore-scripts=false",
             "--no-audit",
             "--no-fund",
-            "--cache=/tmp/.npm",
+            "--cache=/tmp/.npm-" + std::to_string(getpid()), // unique cache per run — prevents stale cache skipping preinstall
             "--fetch-timeout=5000",
+            "--force",      // force re-extract even if package appears up-to-date
+            "--no-package-lock",
         };
 
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
@@ -160,8 +163,8 @@ int main(int argc, char* argv[]) {
 
         kernel_observer.stop();
 
-        // Print filesystem diff before the verdict
-        print_diff(sandbox.overlay_upper_dir);
+        // Write filesystem diff to log file, print one-line summary to terminal
+        write_diff_log(sandbox.overlay_upper_dir);
 
         std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
 
