@@ -111,16 +111,9 @@ int main(int argc, char* argv[]) {
     std::string command = argv[1];
     std::string target  = argv[2];
 
-    // If the target is a local tarball path, rewrite it to /tmp/<filename>
-    // so it resolves correctly inside the pivot_root jail.
+    // If the target is a local tarball, sandbox.cpp will copy it to /tmp
+    // automatically before clone() — no rewriting needed here.
     std::string npm_target = target;
-    if (!target.empty() && target[0] == '/') {
-        std::string filename = target.substr(target.find_last_of('/') + 1);
-        if (filename.find(".tgz") != std::string::npos ||
-            filename.find(".tar") != std::string::npos) {
-            npm_target = "/tmp/" + filename;
-        }
-    }
 
     if (command == "analyze") {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;

@@ -269,7 +269,6 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     umount2("/tmp/shadow_jail", MNT_DETACH);
 
     // Set up OverlayFS dirs on the host before spawning the child.
-    // The child inherits these paths in its mount namespace.
     bool overlay_ok = setup_overlay_dirs();
     if (overlay_ok) {
         overlay_upper_dir = OVERLAY_UPPER;
@@ -278,9 +277,37 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     char* stack = new char[STACK_SIZE];
     char* stack_top = stack + STACK_SIZE;
 
+    // If the target is a local tarball outside /tmp, copy it into /tmp now
+    // on the host side. construct_prison() stages files from /tmp only — after
+    // pivot_root, the host filesystem is at /old_root, so only /old_root/tmp/*
+    // is accessible for staging. Copying here means any path works.
+    std::vector<std::string> resolved_args = args;
+    for (auto& arg : resolved_args) {
+        if (arg.size() > 1 && arg[0] == '/' &&
+            arg.find("/tmp/") != 0 &&
+            (arg.find(".tgz") != std::string::npos ||
+             arg.find(".tar") != std::string::npos)) {
+
+            std::string filename = arg.substr(arg.find_last_of('/') + 1);
+            std::string dest = "/tmp/" + filename;
+
+            std::ifstream src(arg, std::ios::binary);
+            std::ofstream dst(dest, std::ios::binary);
+            if (src && dst) {
+                dst << src.rdbuf();
+                std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                          << " Tarball copied to /tmp for staging: " << dest << std::endl;
+                arg = dest; // rewrite the arg to the /tmp path
+            } else {
+                std::cerr << COLOR_RED << "[Shadow] Failed to copy tarball to /tmp: "
+                          << arg << COLOR_RESET << std::endl;
+            }
+        }
+    }
+
     std::vector<char*> c_args;
     c_args.push_back(const_cast<char*>(command.c_str()));
-    for (const auto& arg : args) c_args.push_back(const_cast<char*>(arg.c_str()));
+    for (const auto& arg : resolved_args) c_args.push_back(const_cast<char*>(arg.c_str()));
     c_args.push_back(nullptr);
 
     ChildArgs child_args = { command.c_str(), c_args.data() };
