@@ -32,6 +32,7 @@ add_executable(shadow
     core/src/sandbox.cpp
     core/src/observer.cpp
     core/src/threat_intel.cpp
+    core/src/apt_analyzer.cpp
 )
 
 add_dependencies(shadow bpf_skeleton)

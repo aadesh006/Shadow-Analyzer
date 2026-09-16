@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "../include/sandbox.h"
 #include "../include/observer.h"
+#include "../include/apt_analyzer.h"
 
 // ANSI Terminal Colors
 #define COLOR_RESET   "\033[0m"
@@ -103,8 +104,11 @@ static void write_diff_log(const std::string& upper_dir) {
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Usage: shadow analyze <package>[@<version>]" << std::endl;
-        std::cerr << "       shadow analyze <path/to/package.tgz>" << std::endl;
+        std::cerr << "Usage:" << std::endl;
+        std::cerr << "  shadow analyze <package>[@<version>]        — analyze npm package" << std::endl;
+        std::cerr << "  shadow analyze <path/to/package.tgz>        — analyze local npm tarball" << std::endl;
+        std::cerr << "  shadow apt     <package>                    — analyze apt/deb package" << std::endl;
+        std::cerr << "  shadow apt     <path/to/package.deb>        — analyze local .deb" << std::endl;
         return 1;
     }
 
@@ -176,6 +180,109 @@ int main(int argc, char* argv[]) {
                       << "[RESULT] CLEAN — No threats detected."
                       << COLOR_RESET << std::endl;
         }
+
+    } else if (command == "apt") {
+        // ── APT / .deb package analysis ────────────────────────────────────
+        // Approach 1: sandbox maintainer scripts only.
+        // Does NOT run the real apt install — only preinst/postinst/prerm/postrm
+        // are executed inside Shadow's sandbox so the eBPF hooks observe them.
+        std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
+        std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                  << " Mode: apt/deb | Target: " << target << "\n" << std::endl;
+
+        // Step 1 — Fetch the .deb and extract maintainer scripts
+        AptAnalyzer apt;
+        if (!apt.fetch(target)) {
+            std::cerr << COLOR_RED
+                      << "[Shadow] Failed to fetch package. Aborting."
+                      << COLOR_RESET << std::endl;
+            return 1;
+        }
+
+        auto scripts = apt.extract_scripts();
+
+        if (scripts.empty()) {
+            std::cout << COLOR_GREEN
+                      << "[RESULT] CLEAN — No maintainer scripts found. Nothing to sandbox."
+                      << COLOR_RESET << std::endl;
+            apt.cleanup();
+            return 0;
+        }
+
+        // Step 2 — Load eBPF probes once, reused across all scripts
+        Observer kernel_observer;
+        if (!kernel_observer.start()) {
+            std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
+            apt.cleanup();
+            return 1;
+        }
+
+        // Step 3 — Run each maintainer script inside the sandbox
+        // Scripts are invoked as: sh <script> configure (mimicking dpkg behaviour)
+        int overall_status = 0;
+        for (const auto& script_path : scripts) {
+            if (kernel_observer.threat_detected) break; // stop on first hit
+
+            std::string script_name = script_path.substr(script_path.find_last_of('/') + 1);
+            std::cout << "\n" << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                      << " Sandboxing maintainer script: " << script_name << std::endl;
+
+            // Stage the script into /tmp so the sandbox can find it after pivot_root
+            std::string staged = "/tmp/shadow_apt_script_" + script_name;
+            {
+                std::ifstream src(script_path, std::ios::binary);
+                std::ofstream dst(staged, std::ios::binary);
+                if (src && dst) {
+                    dst << src.rdbuf();
+                    chmod(staged.c_str(), 0755);
+                }
+            }
+
+            Sandbox sandbox;
+            // Pass staged path as argv[2] so construct_prison() can stage it.
+            // Then run: sh /tmp/shadow_apt_script_<name> configure
+            std::vector<std::string> sh_args = {
+                staged,
+                "configure"
+            };
+
+            int status = sandbox.run("sh", sh_args,
+                [&kernel_observer](pid_t child_pid) {
+                    kernel_observer.register_sandbox_pid(child_pid);
+                });
+
+            if (status == 124) overall_status = 124;
+
+            unlink(staged.c_str());
+        }
+
+        // Step 4 — Drain ring buffer and report
+        std::cout << "\n[Shadow] Sweeping ring buffer for final events..." << std::endl;
+        sleep(2);
+        kernel_observer.stop();
+
+        std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
+        std::cout << COLOR_CYAN << "[APT]" << COLOR_RESET
+                  << " Package: " << apt.package_name
+                  << " " << apt.package_version << std::endl;
+
+        if (overall_status == 124) {
+            std::cout << COLOR_YELLOW
+                      << "[RESULT] TIMEOUT — Maintainer script stalled. Requires manual review."
+                      << COLOR_RESET << std::endl;
+        } else if (kernel_observer.threat_detected) {
+            std::cout << COLOR_RED
+                      << "[RESULT] MALICIOUS — "
+                      << kernel_observer.threat_description
+                      << "\n         DO NOT INSTALL THIS PACKAGE."
+                      << COLOR_RESET << std::endl;
+        } else {
+            std::cout << COLOR_GREEN
+                      << "[RESULT] CLEAN — No threats detected in maintainer scripts."
+                      << COLOR_RESET << std::endl;
+        }
+
+        apt.cleanup();
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
