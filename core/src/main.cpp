@@ -246,11 +246,16 @@ int main(int argc, char* argv[]) {
             }
 
             Sandbox sandbox;
-            // Pass staged path as argv[2] so construct_prison() can stage it.
-            // Then run: sh /tmp/shadow_apt_script_<name> configure
+            // argv layout for construct_prison staging:
+            //   argv[0] = "sh"        (command)
+            //   argv[1] = "sh"        (placeholder — execvp uses argv[0])
+            //   argv[2] = staged      (staged script path — construct_prison reads this)
+            //   argv[3] = "configure" (argument passed to the script)
+            // construct_prison() copies argv[2] from /old_root into the jail's /tmp.
             std::vector<std::string> sh_args = {
-                staged,
-                "configure"
+                "sh",           // argv[1] — first real sh arg (sh itself)
+                staged,         // argv[2] — script path, staged by construct_prison
+                "configure"     // argv[3] — dpkg configure argument
             };
 
             int status = sandbox.run("sh", sh_args,
