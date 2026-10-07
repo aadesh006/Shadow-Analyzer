@@ -175,6 +175,13 @@ int main(int argc, char* argv[]) {
                       << kernel_observer.threat_description
                       << "\n         DO NOT INSTALL THIS PACKAGE."
                       << COLOR_RESET << std::endl;
+        } else if (kernel_observer.suspicious_connections > 0) {
+            std::cout << COLOR_YELLOW
+                      << "[RESULT] SUSPICIOUS — "
+                      << kernel_observer.suspicious_connections
+                      << " non-CDN outbound connection(s) detected."
+                      << "\n         Manual review recommended before installing."
+                      << COLOR_RESET << std::endl;
         } else {
             std::cout << COLOR_GREEN
                       << "[RESULT] CLEAN — No threats detected."
@@ -275,6 +282,13 @@ int main(int argc, char* argv[]) {
                       << "[RESULT] MALICIOUS — "
                       << kernel_observer.threat_description
                       << "\n         DO NOT INSTALL THIS PACKAGE."
+                      << COLOR_RESET << std::endl;
+        } else if (kernel_observer.suspicious_connections > 0) {
+            std::cout << COLOR_YELLOW
+                      << "[RESULT] SUSPICIOUS — "
+                      << kernel_observer.suspicious_connections
+                      << " non-CDN outbound connection(s) detected."
+                      << "\n         Manual review recommended before installing."
                       << COLOR_RESET << std::endl;
         } else {
             std::cout << COLOR_GREEN

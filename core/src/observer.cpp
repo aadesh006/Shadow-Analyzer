@@ -8,6 +8,7 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <set>
 #include <cstring>
 #include <unistd.h>
 
@@ -321,6 +322,7 @@ if (comm == "systemd-resolve" ||
                       << " -> " << display_host
                       << " Port: " << e->dest_port
                       << std::endl;
+            self->suspicious_connections++;
         } else {
             std::cout << "  " COLOR_GREEN "[NET]" COLOR_RESET
                       << " PID: " << e->pid
@@ -361,14 +363,20 @@ if (comm == "systemd-resolve" ||
         );
 
         if (!is_expected) {
-            std::cout << "  " COLOR_MAGENTA "[PROCESS]" COLOR_RESET
-                      << " " << parent
-                      << " (PPID " << e->ppid << ")"
-                      << " spawned: " << binary
-                      << " (PID " << e->pid << ")"
-                      << std::endl;
+            // Deduplicate [PROCESS] lines per PID — execve tries each PATH
+            // entry separately, so the same binary can fire multiple events
+            // with the same PID. Only log the first one.
+            bool already_seen = (self->seen_alert_pids.count(e->pid) > 0);
 
-            // Spawning curl, wget, python, perl, ruby during postinstall
+            if (!already_seen) {
+                std::cout << "  " COLOR_MAGENTA "[PROCESS]" COLOR_RESET
+                          << " " << parent
+                          << " (PPID " << e->ppid << ")"
+                          << " spawned: " << binary
+                          << " (PID " << e->pid << ")"
+                          << std::endl;
+            }
+
             bool is_downloader = (
                 binary.find("curl")   != std::string::npos ||
                 binary.find("wget")   != std::string::npos ||
@@ -378,7 +386,8 @@ if (comm == "systemd-resolve" ||
                 binary.find("bash")   != std::string::npos
             );
 
-            if (is_downloader) {
+            if (is_downloader && !already_seen) {
+                self->seen_alert_pids.insert(e->pid);
                 std::cout << "  " COLOR_RED "[ALERT]" COLOR_RESET
                           << " Suspicious process spawned during install: "
                           << binary << std::endl;
