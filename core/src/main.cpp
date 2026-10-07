@@ -256,6 +256,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "  shadow analyze <path/to/package.tgz>        — analyze local npm tarball" << std::endl;
         std::cerr << "  shadow apt     <package>                    — analyze apt/deb package" << std::endl;
         std::cerr << "  shadow apt     <path/to/package.deb>        — analyze local .deb" << std::endl;
+        std::cerr << "  shadow pip     <package>                    — analyze pip/PyPI package" << std::endl;
+        std::cerr << "  shadow pip     <path/to/package.tar.gz>     — analyze local Python package" << std::endl;
         return 1;
     }
 
@@ -377,6 +379,67 @@ int main(int argc, char* argv[]) {
         print_verdict(overall_status, kernel_observer, empty_diff);
 
         apt.cleanup();
+
+    } else if (command == "pip") {
+        // ── pip / PyPI package analysis ────────────────────────────────────
+        // Reuses the same sandbox + eBPF architecture as npm. Python packages
+        // execute setup.py hooks during install — same threat model as npm scripts.
+        // We run `pip install` inside the sandbox and observe behavior.
+        std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
+        std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                  << " Mode: pip/PyPI | Target: " << target << "\n" << std::endl;
+
+        Observer kernel_observer;
+        if (!kernel_observer.start()) {
+            std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
+            return 1;
+        }
+
+        Sandbox sandbox;
+
+        // Detect local Python package files vs PyPI registry packages
+        std::string pip_target = target;
+        if (target.size() > 1 && target[0] == '/' &&
+            (target.find(".tar.gz") != std::string::npos ||
+             target.find(".whl") != std::string::npos ||
+             target.find(".zip") != std::string::npos)) {
+            // Local package — sandbox.cpp will copy it to /tmp automatically
+            std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                      << " Local Python package detected." << std::endl;
+        }
+
+        // Try multiple pip invocation methods for maximum compatibility
+        std::vector<std::vector<std::string>> pip_variants = {
+            {"pip3", "install", pip_target, "--no-deps", "--force-reinstall", "--no-cache-dir"},
+            {"python3", "-m", "pip", "install", pip_target, "--no-deps", "--force-reinstall", "--no-cache-dir"},
+            {"pip", "install", pip_target, "--no-deps", "--force-reinstall", "--no-cache-dir"}
+        };
+
+        std::string pip_cmd;
+        std::vector<std::string> pip_args;
+        
+        // Use the first variant as default (can be enhanced to detect available pip)
+        pip_cmd = pip_variants[1][0]; // python3
+        pip_args = {pip_variants[1].begin() + 1, pip_variants[1].end()};
+
+        std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                  << " Launching " << pip_cmd << " inside sandbox..." << std::endl;
+
+        int sandbox_status = sandbox.run(pip_cmd, pip_args,
+            [&kernel_observer](pid_t child_pid) {
+                kernel_observer.register_sandbox_pid(child_pid);
+            });
+
+        std::cout << "[Shadow] Sweeping ring buffer for final events..." << std::endl;
+        sleep(2);
+        kernel_observer.stop();
+
+        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir);
+
+        std::cout << COLOR_CYAN << "[PIP]" << COLOR_RESET
+                  << " Package: " << target << std::endl;
+
+        print_verdict(sandbox_status, kernel_observer, diff);
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;

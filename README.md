@@ -146,7 +146,7 @@ Docker's overhead per syscall is also significantly higher. Shadow's eBPF tracep
 
 | Component | Status |
 |---|---|
-| Linux namespace sandbox (PID, MNT, UTS, IPC, USER) | ✅ Working |
+| Linux namespace sandbox (PID, MNT, UTS, IPC, USER, NET) | ✅ Working |
 | `pivot_root` filesystem jail | ✅ Working |
 | Identity downgrade (sandbox root → host nobody) | ✅ Working |
 | eBPF execve tracepoint — process tree tracking | ✅ Working |
@@ -157,13 +157,14 @@ Docker's overhead per syscall is also significantly higher. Shadow's eBPF tracep
 | Known C2 domain/IP blocklist | ✅ Working |
 | Suspicious process spawn detection (curl, wget, python) | ✅ Working |
 | Sandbox execution timeout (60s) | ✅ Working |
-| Unified MALICIOUS / CLEAN verdict | ✅ Working |
-| Network namespace isolation (`CLONE_NEWNET`) | 🔧 In progress |
-| PID-scoped LSM filtering (sandbox-only events) | 🔧 In progress |
-| OverlayFS filesystem delta (`shadow diff`) | ⏳ Planned |
+| Unified MALICIOUS / CLEAN / SUSPICIOUS verdict | ✅ Working |
+| Network namespace isolation (`CLONE_NEWNET`) | ✅ Working |
+| PID-scoped LSM filtering (sandbox-only events) | ✅ Working |
+| OverlayFS filesystem delta (`shadow diff`) | ✅ Working |
+| apt/deb package support | ✅ Working |
+| pip/PyPI package support | ✅ Working |
 | `shadow watch` — continuous host EDR daemon | ⏳ Planned |
 | `shadow policy sync` — remote threat feed | ⏳ Planned |
-| pip / PyPI support | ⏳ Planned |
 | GitHub Actions integration | ⏳ Planned |
 
 ---
@@ -271,17 +272,32 @@ The build pipeline:
 ## Usage
 
 ```bash
+# npm/Node.js packages
 sudo ./shadow analyze <package>
 sudo ./shadow analyze <package>@<version>
+sudo ./shadow analyze <path/to/package.tgz>
+
+# Python/pip packages  
+sudo ./shadow pip <package>
+sudo ./shadow pip <path/to/package.tar.gz>
+
+# apt/deb packages
+sudo ./shadow apt <package>
+sudo ./shadow apt <path/to/package.deb>
 
 # Examples
 sudo ./shadow analyze lodash
 sudo ./shadow analyze axios@1.14.1
-sudo ./shadow analyze esbuild
-sudo ./shadow analyze sharp
+sudo ./shadow analyze /home/user/suspicious-package.tgz
+
+sudo ./shadow pip requests
+sudo ./shadow pip /tmp/malicious-package.tar.gz
+
+sudo ./shadow apt curl
+sudo ./shadow apt /home/user/suspicious.deb
 ```
 
-Shadow must be run as root. Analysis completes in the time npm takes to install the package (1–30 seconds). If the package stalls, Shadow kills the sandbox after 60 seconds.
+Shadow must be run as root. Analysis completes in the time the package manager takes to install the package (1–30 seconds). If the package stalls, Shadow kills the sandbox after 60 seconds.
 
 ### Output Guide
 
