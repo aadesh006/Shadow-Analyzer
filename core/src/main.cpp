@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <functional>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -19,33 +20,57 @@
 #define COLOR_BOLD    "\033[1m"
 
 // ---------------------------------------------------------------------------
-// write_diff_log()
+// DiffResult
 //
-// Walks the OverlayFS upper directory and writes the full filesystem delta
-// to a log file at /tmp/shadow_diff_<pid>.log instead of flooding the
-// terminal. Prints a one-line summary to stdout when done.
-//
-// upper_dir: host-side path to the OverlayFS upper layer.
+// Returned by analyze_diff(). Carries both the full file counts and any
+// suspicious findings that should influence the verdict.
 // ---------------------------------------------------------------------------
-static void write_diff_log(const std::string& upper_dir) {
+struct DiffResult {
+    int  file_count      = 0;
+    int  del_count       = 0;
+    bool has_findings    = false;  // true if any suspicious write was found
+    std::string log_path;          // path to the full diff log file
+
+    // Specific suspicious findings — each is a human-readable description
+    std::vector<std::string> findings;
+};
+
+// ---------------------------------------------------------------------------
+// analyze_diff()
+//
+// Walks the OverlayFS upper directory. For every file written by the package:
+//   1. Writes a full log to /tmp/shadow_diff_<pid>.log
+//   2. Actively flags suspicious writes:
+//        - Files written OUTSIDE sandbox_pkg/node_modules/ or sandbox_pkg/.npm
+//          (packages should only write inside node_modules)
+//        - Executable files written anywhere
+//        - Writes to .git/hooks/ (hook injection)
+//        - Writes to shell rc files (~/.bashrc, ~/.zshrc, ~/.profile)
+//        - Writes to system paths (/etc/, /usr/, /bin/, /sbin/)
+//
+// Returns a DiffResult. If upper_dir is empty (OverlayFS not available),
+// returns an empty result and prints a warning.
+// ---------------------------------------------------------------------------
+static DiffResult analyze_diff(const std::string& upper_dir) {
+    DiffResult result;
+
     if (upper_dir.empty()) {
         std::cout << COLOR_YELLOW
                   << "[DIFF] OverlayFS not available — filesystem diff skipped."
                   << COLOR_RESET << std::endl;
-        return;
+        return result;
     }
 
-    // Build log path: /tmp/shadow_diff_<pid>.log
-    std::string log_path = "/tmp/shadow_diff_" + std::to_string(getpid()) + ".log";
-    std::ofstream log(log_path);
+    result.log_path = "/tmp/shadow_diff_" + std::to_string(getpid()) + ".log";
+    std::ofstream log(result.log_path);
     if (!log.is_open()) {
         std::cerr << COLOR_YELLOW << "[DIFF] Could not open log file: "
-                  << log_path << COLOR_RESET << std::endl;
-        return;
+                  << result.log_path << COLOR_RESET << std::endl;
+        return result;
     }
 
-    int file_count = 0;
-    int del_count  = 0;
+    log << "# Shadow Filesystem Delta\n";
+    log << "# Format: [+] created/modified  [-] deleted  [!] suspicious\n\n";
 
     std::function<void(const std::string&, const std::string&)> walk =
         [&](const std::string& dir, const std::string& rel_prefix) {
@@ -64,7 +89,7 @@ static void write_diff_log(const std::string& upper_dir) {
                 if (name.size() > 4 && name.substr(0, 4) == ".wh.") {
                     std::string deleted = rel_prefix + "/" + name.substr(4);
                     log << "[-] DELETED  " << deleted << "\n";
-                    del_count++;
+                    result.del_count++;
                     continue;
                 }
 
@@ -73,18 +98,78 @@ static void write_diff_log(const std::string& upper_dir) {
 
                 if (S_ISDIR(st.st_mode)) {
                     walk(full_path, rel_path);
-                } else {
-                    std::string size_str;
-                    if (st.st_size < 1024)
-                        size_str = std::to_string(st.st_size) + "B";
-                    else if (st.st_size < 1024 * 1024)
-                        size_str = std::to_string(st.st_size / 1024) + "KB";
-                    else
-                        size_str = std::to_string(st.st_size / (1024 * 1024)) + "MB";
-
-                    log << "[+] " << rel_path << " (" << size_str << ")\n";
-                    file_count++;
+                    continue;
                 }
+
+                // Format size
+                std::string size_str;
+                if (st.st_size < 1024)
+                    size_str = std::to_string(st.st_size) + "B";
+                else if (st.st_size < 1024 * 1024)
+                    size_str = std::to_string(st.st_size / 1024) + "KB";
+                else
+                    size_str = std::to_string(st.st_size / (1024 * 1024)) + "MB";
+
+                log << "[+] " << rel_path << " (" << size_str << ")";
+                result.file_count++;
+
+                // ── Active analysis ──────────────────────────────────────
+
+                // 1. Executable bit set on a written file
+                bool is_executable = (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH));
+                if (is_executable) {
+                    std::string finding = "Executable written: " + rel_path;
+                    result.findings.push_back(finding);
+                    result.has_findings = true;
+                    log << "  [!] EXECUTABLE";
+                }
+
+                // 2. Write outside sandbox_pkg/node_modules and sandbox_pkg/.npm
+                //    (npm cache and node_modules are the only expected write targets)
+                bool in_node_modules = (rel_path.find("/sandbox_pkg/node_modules") != std::string::npos);
+                bool in_npm_cache    = (rel_path.find("/sandbox_pkg/.npm") != std::string::npos ||
+                                        rel_path.find("/.npm") != std::string::npos);
+                bool in_pkg_json     = (rel_path.find("/sandbox_pkg/package") != std::string::npos);
+
+                if (!in_node_modules && !in_npm_cache && !in_pkg_json) {
+                    std::string finding = "Write outside node_modules: " + rel_path;
+                    result.findings.push_back(finding);
+                    result.has_findings = true;
+                    log << "  [!] OUTSIDE_NODE_MODULES";
+                }
+
+                // 3. Git hook injection
+                if (rel_path.find("/.git/hooks/") != std::string::npos) {
+                    std::string finding = "Git hook written: " + rel_path;
+                    result.findings.push_back(finding);
+                    result.has_findings = true;
+                    log << "  [!] GIT_HOOK_INJECTION";
+                }
+
+                // 4. Shell rc / profile persistence
+                if (rel_path.find("/.bashrc")  != std::string::npos ||
+                    rel_path.find("/.zshrc")   != std::string::npos ||
+                    rel_path.find("/.profile")  != std::string::npos ||
+                    rel_path.find("/.bash_profile") != std::string::npos) {
+                    std::string finding = "Shell profile modified: " + rel_path;
+                    result.findings.push_back(finding);
+                    result.has_findings = true;
+                    log << "  [!] SHELL_PERSISTENCE";
+                }
+
+                // 5. System path write (shouldn't be possible inside sandbox
+                //    but flag it if it somehow appears in the overlay)
+                if (rel_path.find("/etc/")  == 0 ||
+                    rel_path.find("/usr/")  == 0 ||
+                    rel_path.find("/bin/")  == 0 ||
+                    rel_path.find("/sbin/") == 0) {
+                    std::string finding = "System path write: " + rel_path;
+                    result.findings.push_back(finding);
+                    result.has_findings = true;
+                    log << "  [!] SYSTEM_PATH_WRITE";
+                }
+
+                log << "\n";
             }
             closedir(d);
         };
@@ -92,11 +177,73 @@ static void write_diff_log(const std::string& upper_dir) {
     walk(upper_dir, "");
     log.close();
 
-    // One-line summary on the terminal
+    // Terminal summary
     std::cout << COLOR_CYAN << "[DIFF]" << COLOR_RESET
-              << " " << file_count << " file(s) written, "
-              << del_count << " deleted."
-              << " Full log: " << log_path << std::endl;
+              << " " << result.file_count << " file(s) written, "
+              << result.del_count << " deleted.";
+
+    if (result.has_findings) {
+        std::cout << " " << COLOR_YELLOW
+                  << result.findings.size() << " suspicious finding(s)."
+                  << COLOR_RESET;
+    }
+
+    std::cout << " Full log: " << result.log_path << std::endl;
+
+    // Print suspicious findings to terminal
+    if (result.has_findings) {
+        for (const auto& f : result.findings) {
+            std::cout << "  " << COLOR_YELLOW << "[DIFF]" << COLOR_RESET
+                      << " " << f << std::endl;
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// print_verdict()
+//
+// Unified verdict printer used by both analyze and apt commands.
+// Verdict priority: TIMEOUT > MALICIOUS > SUSPICIOUS (diff) >
+//                   SUSPICIOUS (network) > CLEAN
+// ---------------------------------------------------------------------------
+static void print_verdict(int sandbox_status,
+                           const Observer& obs,
+                           const DiffResult& diff) {
+    std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
+
+    if (sandbox_status == 124) {
+        std::cout << COLOR_YELLOW
+                  << "[RESULT] TIMEOUT — Package stalled the sandbox. Requires manual review."
+                  << COLOR_RESET << std::endl;
+    } else if (obs.threat_detected) {
+        std::cout << COLOR_RED
+                  << "[RESULT] MALICIOUS — "
+                  << obs.threat_description
+                  << "\n         DO NOT INSTALL THIS PACKAGE."
+                  << COLOR_RESET << std::endl;
+    } else if (diff.has_findings) {
+        std::cout << COLOR_YELLOW
+                  << "[RESULT] SUSPICIOUS — Filesystem analysis flagged "
+                  << diff.findings.size() << " issue(s):\n";
+        for (const auto& f : diff.findings) {
+            std::cout << "           • " << f << "\n";
+        }
+        std::cout << "         Manual review recommended before installing."
+                  << COLOR_RESET << std::endl;
+    } else if (obs.suspicious_connections > 0) {
+        std::cout << COLOR_YELLOW
+                  << "[RESULT] SUSPICIOUS — "
+                  << obs.suspicious_connections
+                  << " non-CDN outbound connection(s) detected."
+                  << "\n         Manual review recommended before installing."
+                  << COLOR_RESET << std::endl;
+    } else {
+        std::cout << COLOR_GREEN
+                  << "[RESULT] CLEAN — No threats detected."
+                  << COLOR_RESET << std::endl;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +261,6 @@ int main(int argc, char* argv[]) {
 
     std::string command = argv[1];
     std::string target  = argv[2];
-
-    // If the target is a local tarball, sandbox.cpp will copy it to /tmp
-    // automatically before clone() — no rewriting needed here.
     std::string npm_target = target;
 
     if (command == "analyze") {
@@ -124,7 +268,6 @@ int main(int argc, char* argv[]) {
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
                   << " Target: " << target << "\n" << std::endl;
 
-        // Load and attach eBPF probes
         Observer kernel_observer;
         if (!kernel_observer.start()) {
             std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
@@ -132,7 +275,6 @@ int main(int argc, char* argv[]) {
         }
 
         Sandbox sandbox;
-        std::string pkg_manager = "npm";
 
         std::vector<std::string> npm_args = {
             "install",
@@ -140,68 +282,36 @@ int main(int argc, char* argv[]) {
             "--ignore-scripts=false",
             "--no-audit",
             "--no-fund",
-            "--cache=/tmp/.npm-" + std::to_string(getpid()), // unique cache per run — prevents stale cache skipping preinstall
+            "--cache=/tmp/.npm-" + std::to_string(getpid()),
             "--fetch-timeout=5000",
-            "--force",      // force re-extract even if package appears up-to-date
+            "--force",
             "--no-package-lock",
         };
 
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
-                  << " Launching " << pkg_manager << " inside sandbox..." << std::endl;
+                  << " Launching npm inside sandbox..." << std::endl;
 
-        int sandbox_status = sandbox.run(pkg_manager, npm_args,
+        int sandbox_status = sandbox.run("npm", npm_args,
             [&kernel_observer](pid_t child_pid) {
                 kernel_observer.register_sandbox_pid(child_pid);
             });
 
-        // Drain the ring buffer for any final in-flight events
         std::cout << "[Shadow] Sweeping ring buffer for final events..." << std::endl;
         sleep(2);
-
         kernel_observer.stop();
 
-        // Write filesystem diff to log file, print one-line summary to terminal
-        write_diff_log(sandbox.overlay_upper_dir);
+        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir);
 
-        std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
-
-        if (sandbox_status == 124) {
-            std::cout << COLOR_YELLOW
-                      << "[RESULT] TIMEOUT — Package stalled the sandbox. Requires manual review."
-                      << COLOR_RESET << std::endl;
-        } else if (kernel_observer.threat_detected) {
-            std::cout << COLOR_RED
-                      << "[RESULT] MALICIOUS — "
-                      << kernel_observer.threat_description
-                      << "\n         DO NOT INSTALL THIS PACKAGE."
-                      << COLOR_RESET << std::endl;
-        } else if (kernel_observer.suspicious_connections > 0) {
-            std::cout << COLOR_YELLOW
-                      << "[RESULT] SUSPICIOUS — "
-                      << kernel_observer.suspicious_connections
-                      << " non-CDN outbound connection(s) detected."
-                      << "\n         Manual review recommended before installing."
-                      << COLOR_RESET << std::endl;
-        } else {
-            std::cout << COLOR_GREEN
-                      << "[RESULT] CLEAN — No threats detected."
-                      << COLOR_RESET << std::endl;
-        }
+        print_verdict(sandbox_status, kernel_observer, diff);
 
     } else if (command == "apt") {
-        // ── APT / .deb package analysis ────────────────────────────────────
-        // Approach 1: sandbox maintainer scripts only.
-        // Does NOT run the real apt install — only preinst/postinst/prerm/postrm
-        // are executed inside Shadow's sandbox so the eBPF hooks observe them.
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
         std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
                   << " Mode: apt/deb | Target: " << target << "\n" << std::endl;
 
-        // Step 1 — Fetch the .deb and extract maintainer scripts
         AptAnalyzer apt;
         if (!apt.fetch(target)) {
-            std::cerr << COLOR_RED
-                      << "[Shadow] Failed to fetch package. Aborting."
+            std::cerr << COLOR_RED << "[Shadow] Failed to fetch package. Aborting."
                       << COLOR_RESET << std::endl;
             return 1;
         }
@@ -216,7 +326,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Step 2 — Load eBPF probes once, reused across all scripts
         Observer kernel_observer;
         if (!kernel_observer.start()) {
             std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
@@ -224,38 +333,26 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Step 3 — Run each maintainer script inside the sandbox
-        // Scripts are invoked as: sh <script> configure (mimicking dpkg behaviour)
         int overall_status = 0;
         for (const auto& script_path : scripts) {
-            if (kernel_observer.threat_detected) break; // stop on first hit
+            if (kernel_observer.threat_detected) break;
 
             std::string script_name = script_path.substr(script_path.find_last_of('/') + 1);
             std::cout << "\n" << COLOR_CYAN << "[Shadow]" << COLOR_RESET
                       << " Sandboxing maintainer script: " << script_name << std::endl;
 
-            // Stage the script into /tmp so the sandbox can find it after pivot_root
             std::string staged = "/tmp/shadow_apt_script_" + script_name;
             {
                 std::ifstream src(script_path, std::ios::binary);
                 std::ofstream dst(staged, std::ios::binary);
-                if (src && dst) {
-                    dst << src.rdbuf();
-                    chmod(staged.c_str(), 0755);
-                }
+                if (src && dst) { dst << src.rdbuf(); chmod(staged.c_str(), 0755); }
             }
 
             Sandbox sandbox;
-            // argv layout for construct_prison staging:
-            //   argv[0] = "sh"        (command)
-            //   argv[1] = "sh"        (placeholder — execvp uses argv[0])
-            //   argv[2] = staged      (staged script path — construct_prison reads this)
-            //   argv[3] = "configure" (argument passed to the script)
-            // construct_prison() copies argv[2] from /old_root into the jail's /tmp.
             std::vector<std::string> sh_args = {
-                "sh",           // argv[1] — first real sh arg (sh itself)
-                staged,         // argv[2] — script path, staged by construct_prison
-                "configure"     // argv[3] — dpkg configure argument
+                "sh",
+                staged,
+                "configure"
             };
 
             int status = sandbox.run("sh", sh_args,
@@ -264,42 +361,20 @@ int main(int argc, char* argv[]) {
                 });
 
             if (status == 124) overall_status = 124;
-
             unlink(staged.c_str());
         }
 
-        // Step 4 — Drain ring buffer and report
         std::cout << "\n[Shadow] Sweeping ring buffer for final events..." << std::endl;
         sleep(2);
         kernel_observer.stop();
 
-        std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
         std::cout << COLOR_CYAN << "[APT]" << COLOR_RESET
                   << " Package: " << apt.package_name
                   << " " << apt.package_version << std::endl;
 
-        if (overall_status == 124) {
-            std::cout << COLOR_YELLOW
-                      << "[RESULT] TIMEOUT — Maintainer script stalled. Requires manual review."
-                      << COLOR_RESET << std::endl;
-        } else if (kernel_observer.threat_detected) {
-            std::cout << COLOR_RED
-                      << "[RESULT] MALICIOUS — "
-                      << kernel_observer.threat_description
-                      << "\n         DO NOT INSTALL THIS PACKAGE."
-                      << COLOR_RESET << std::endl;
-        } else if (kernel_observer.suspicious_connections > 0) {
-            std::cout << COLOR_YELLOW
-                      << "[RESULT] SUSPICIOUS — "
-                      << kernel_observer.suspicious_connections
-                      << " non-CDN outbound connection(s) detected."
-                      << "\n         Manual review recommended before installing."
-                      << COLOR_RESET << std::endl;
-        } else {
-            std::cout << COLOR_GREEN
-                      << "[RESULT] CLEAN — No threats detected in maintainer scripts."
-                      << COLOR_RESET << std::endl;
-        }
+        // apt runs scripts without OverlayFS — pass empty DiffResult
+        DiffResult empty_diff;
+        print_verdict(overall_status, kernel_observer, empty_diff);
 
         apt.cleanup();
 

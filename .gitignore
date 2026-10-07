@@ -21,9 +21,16 @@ core/src/bpf/shadow.bpf.o
 core/src/bpf/shadow.skel.h
 core/src/bpf/vmlinux.h
 
-# ─── Tests ───────────────────────────────────────────────────────────────────
-tests/
-test-packages/
+# ─── Test Suite ──────────────────────────────────────────────────────────────
+# Track test source files but ignore the large Catch2 amalgamated headers
+# and compiled test binaries
+tests/catch2/catch_amalgamated.hpp
+tests/catch2/catch_amalgamated.cpp
+
+# ─── Test Package Artifacts ──────────────────────────────────────────────────
+# Keep source dirs (preinstall.js, package.json, DEBIAN/), ignore built artifacts
+test-packages/*.tgz
+test-packages/*.deb
 
 # ─── Runtime Temp Files ──────────────────────────────────────────────────────
 # Created by Shadow at runtime — never need to be committed
@@ -41,4 +48,5 @@ test-packages/
 *.swo
 *~
 
+# ─── Session exports ─────────────────────────────────────────────────────────
 shadow-dev-session.json
