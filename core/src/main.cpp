@@ -3,12 +3,18 @@
 #include <vector>
 #include <fstream>
 #include <functional>
+#include <thread>
+#include <chrono>
+#include <signal.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "../include/sandbox.h"
 #include "../include/observer.h"
 #include "../include/apt_analyzer.h"
+#include "../include/static_scanner.h"
+#include "../include/shadow_watch.h"
+#include "../include/shadow_watch.h"
 
 // ANSI Terminal Colors
 #define COLOR_RESET   "\033[0m"
@@ -39,7 +45,7 @@ struct DiffResult {
 // analyze_diff()
 //
 // Walks the OverlayFS upper directory. For every file written by the package:
-//   1. Writes a full log to /tmp/shadow_diff_<pid>.log
+//   1. Writes a full log to /tmp/shadow_diff_<pid>.log (if verbose)
 //   2. Actively flags suspicious writes:
 //        - Files written OUTSIDE sandbox_pkg/node_modules/ or sandbox_pkg/.npm
 //          (packages should only write inside node_modules)
@@ -51,26 +57,28 @@ struct DiffResult {
 // Returns a DiffResult. If upper_dir is empty (OverlayFS not available),
 // returns an empty result and prints a warning.
 // ---------------------------------------------------------------------------
-static DiffResult analyze_diff(const std::string& upper_dir) {
+static DiffResult analyze_diff(const std::string& upper_dir, bool verbose = false) {
     DiffResult result;
 
     if (upper_dir.empty()) {
-        std::cout << COLOR_YELLOW
-                  << "[DIFF] OverlayFS not available — filesystem diff skipped."
-                  << COLOR_RESET << std::endl;
+        if (verbose) {
+            std::cout << COLOR_YELLOW
+                      << "[DIFF] OverlayFS not available — filesystem diff skipped."
+                      << COLOR_RESET << std::endl;
+        }
         return result;
     }
 
-    result.log_path = "/tmp/shadow_diff_" + std::to_string(getpid()) + ".log";
-    std::ofstream log(result.log_path);
-    if (!log.is_open()) {
-        std::cerr << COLOR_YELLOW << "[DIFF] Could not open log file: "
-                  << result.log_path << COLOR_RESET << std::endl;
-        return result;
+    // Only create log file in verbose mode
+    std::ofstream log;
+    if (verbose) {
+        result.log_path = "/tmp/shadow_diff_" + std::to_string(getpid()) + ".log";
+        log.open(result.log_path);
+        if (log.is_open()) {
+            log << "# Shadow Filesystem Delta\n";
+            log << "# Format: [+] created/modified  [-] deleted  [!] suspicious\n\n";
+        }
     }
-
-    log << "# Shadow Filesystem Delta\n";
-    log << "# Format: [+] created/modified  [-] deleted  [!] suspicious\n\n";
 
     std::function<void(const std::string&, const std::string&)> walk =
         [&](const std::string& dir, const std::string& rel_prefix) {
@@ -88,7 +96,9 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                 // OverlayFS whiteout — file was deleted by the package
                 if (name.size() > 4 && name.substr(0, 4) == ".wh.") {
                     std::string deleted = rel_prefix + "/" + name.substr(4);
-                    log << "[-] DELETED  " << deleted << "\n";
+                    if (verbose && log.is_open()) {
+                        log << "[-] DELETED  " << deleted << "\n";
+                    }
                     result.del_count++;
                     continue;
                 }
@@ -101,19 +111,21 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     continue;
                 }
 
-                // Format size
+                // Format size (only if verbose)
                 std::string size_str;
-                if (st.st_size < 1024)
-                    size_str = std::to_string(st.st_size) + "B";
-                else if (st.st_size < 1024 * 1024)
-                    size_str = std::to_string(st.st_size / 1024) + "KB";
-                else
-                    size_str = std::to_string(st.st_size / (1024 * 1024)) + "MB";
-
-                log << "[+] " << rel_path << " (" << size_str << ")";
+                if (verbose) {
+                    if (st.st_size < 1024)
+                        size_str = std::to_string(st.st_size) + "B";
+                    else if (st.st_size < 1024 * 1024)
+                        size_str = std::to_string(st.st_size / 1024) + "KB";
+                    else
+                        size_str = std::to_string(st.st_size / (1024 * 1024)) + "MB";
+                    
+                    if (log.is_open()) {
+                        log << "[+] " << rel_path << " (" << size_str << ")";
+                    }
+                }
                 result.file_count++;
-
-                // ── Active analysis ──────────────────────────────────────
 
                 // 1. Executable bit set on a written file
                 bool is_executable = (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH));
@@ -121,7 +133,9 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     std::string finding = "Executable written: " + rel_path;
                     result.findings.push_back(finding);
                     result.has_findings = true;
-                    log << "  [!] EXECUTABLE";
+                    if (verbose && log.is_open()) {
+                        log << "  [!] EXECUTABLE";
+                    }
                 }
 
                 // 2. Write outside sandbox_pkg/node_modules and sandbox_pkg/.npm
@@ -135,7 +149,9 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     std::string finding = "Write outside node_modules: " + rel_path;
                     result.findings.push_back(finding);
                     result.has_findings = true;
-                    log << "  [!] OUTSIDE_NODE_MODULES";
+                    if (verbose && log.is_open()) {
+                        log << "  [!] OUTSIDE_NODE_MODULES";
+                    }
                 }
 
                 // 3. Git hook injection
@@ -143,7 +159,9 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     std::string finding = "Git hook written: " + rel_path;
                     result.findings.push_back(finding);
                     result.has_findings = true;
-                    log << "  [!] GIT_HOOK_INJECTION";
+                    if (verbose && log.is_open()) {
+                        log << "  [!] GIT_HOOK_INJECTION";
+                    }
                 }
 
                 // 4. Shell rc / profile persistence
@@ -154,7 +172,9 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     std::string finding = "Shell profile modified: " + rel_path;
                     result.findings.push_back(finding);
                     result.has_findings = true;
-                    log << "  [!] SHELL_PERSISTENCE";
+                    if (verbose && log.is_open()) {
+                        log << "  [!] SHELL_PERSISTENCE";
+                    }
                 }
 
                 // 5. System path write (shouldn't be possible inside sandbox
@@ -166,31 +186,42 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
                     std::string finding = "System path write: " + rel_path;
                     result.findings.push_back(finding);
                     result.has_findings = true;
-                    log << "  [!] SYSTEM_PATH_WRITE";
+                    if (verbose && log.is_open()) {
+                        log << "  [!] SYSTEM_PATH_WRITE";
+                    }
                 }
 
-                log << "\n";
+                if (verbose && log.is_open()) {
+                    log << "\n";
+                }
             }
             closedir(d);
         };
 
     walk(upper_dir, "");
-    log.close();
-
-    // Terminal summary
-    std::cout << COLOR_CYAN << "[DIFF]" << COLOR_RESET
-              << " " << result.file_count << " file(s) written, "
-              << result.del_count << " deleted.";
-
-    if (result.has_findings) {
-        std::cout << " " << COLOR_YELLOW
-                  << result.findings.size() << " suspicious finding(s)."
-                  << COLOR_RESET;
+    if (verbose && log.is_open()) {
+        log.close();
     }
 
-    std::cout << " Full log: " << result.log_path << std::endl;
+    // Terminal summary - always show but cleaner in normal mode
+    if (verbose) {
+        std::cout << COLOR_CYAN << "[DIFF]" << COLOR_RESET
+                  << " " << result.file_count << " file(s) written, "
+                  << result.del_count << " deleted.";
 
-    // Print suspicious findings to terminal
+        if (result.has_findings) {
+            std::cout << " " << COLOR_YELLOW
+                      << result.findings.size() << " suspicious finding(s)."
+                      << COLOR_RESET;
+        }
+
+        if (!result.log_path.empty()) {
+            std::cout << " Full log: " << result.log_path;
+        }
+        std::cout << std::endl;
+    }
+
+    // Always print suspicious findings to terminal (even in quiet mode)
     if (result.has_findings) {
         for (const auto& f : result.findings) {
             std::cout << "  " << COLOR_YELLOW << "[DIFF]" << COLOR_RESET
@@ -204,13 +235,14 @@ static DiffResult analyze_diff(const std::string& upper_dir) {
 // ---------------------------------------------------------------------------
 // print_verdict()
 //
-// Unified verdict printer used by both analyze and apt commands.
-// Verdict priority: TIMEOUT > MALICIOUS > SUSPICIOUS (diff) >
-//                   SUSPICIOUS (network) > CLEAN
+// Unified verdict printer used by all commands (analyze, apt, pip).
+// Verdict priority: TIMEOUT > MALICIOUS > SUSPICIOUS (static) > 
+//                   SUSPICIOUS (diff) > SUSPICIOUS (network) > CLEAN
 // ---------------------------------------------------------------------------
 static void print_verdict(int sandbox_status,
                            const Observer& obs,
-                           const DiffResult& diff) {
+                           const DiffResult& diff,
+                           const StaticScanResult& static_scan = {}) {
     std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
 
     if (sandbox_status == 124) {
@@ -222,6 +254,15 @@ static void print_verdict(int sandbox_status,
                   << "[RESULT] MALICIOUS — "
                   << obs.threat_description
                   << "\n         DO NOT INSTALL THIS PACKAGE."
+                  << COLOR_RESET << std::endl;
+    } else if (static_scan.has_findings) {
+        std::cout << COLOR_YELLOW
+                  << "[RESULT] SUSPICIOUS — Static analysis flagged "
+                  << static_scan.findings.size() << " dormant threat(s):\n";
+        for (const auto& f : static_scan.findings) {
+            std::cout << "           • " << f << "\n";
+        }
+        std::cout << "         Package may contain staged payloads or obfuscated malware."
                   << COLOR_RESET << std::endl;
     } else if (diff.has_findings) {
         std::cout << COLOR_YELLOW
@@ -242,14 +283,111 @@ static void print_verdict(int sandbox_status,
     } else {
         std::cout << COLOR_GREEN
                   << "[RESULT] CLEAN — No threats detected."
-                  << COLOR_RESET << std::endl;
+                  << COLOR_RESET;
+        
+        // Show static scan summary for clean packages
+        if (static_scan.files_scanned > 0) {
+            std::cout << " Post-install scan: " << static_scan.files_scanned << " files analyzed.";
+        }
+        
+        std::cout << std::endl;
     }
 }
+
+// Global verbose flag
+bool g_verbose_mode = false;
 
 // ---------------------------------------------------------------------------
 // main()
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage:" << std::endl;
+        std::cerr << "  shadow analyze <package>[@<version>] [--verbose]  — analyze npm package" << std::endl;
+        std::cerr << "  shadow analyze <path/to/package.tgz> [--verbose]  — analyze local npm tarball" << std::endl;
+        std::cerr << "  shadow apt     <package> [--verbose]             — analyze apt/deb package" << std::endl;
+        std::cerr << "  shadow apt     <path/to/package.deb> [--verbose] — analyze local .deb" << std::endl;
+        std::cerr << "  shadow pip     <package> [--verbose]             — analyze pip/PyPI package" << std::endl;
+        std::cerr << "  shadow pip     <path/to/package.tar.gz> [--verbose] — analyze local Python package" << std::endl;
+        std::cerr << "  shadow watch   <start|stop|status|logs>          — EDR daemon control" << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "Options:" << std::endl;
+        std::cerr << "  --verbose    Show detailed analysis logs" << std::endl;
+        return 1;
+    }
+
+    std::string command = argv[1];
+    
+    // Check for verbose flag in any position
+    for (int i = 2; i < argc; i++) {
+        if (std::string(argv[i]) == "--verbose") {
+            g_verbose_mode = true;
+            break;
+        }
+    }
+    
+    if (command == "watch") {
+        // ── shadow watch daemon control ────────────────────────────────────────
+        if (argc < 3) {
+            std::cerr << "Usage: shadow watch <start|stop|status|logs>" << std::endl;
+            return 1;
+        }
+        
+        std::string watch_command = argv[2];
+        
+        if (watch_command == "start") {
+            std::cout << "=== Shadow Watch EDR Daemon ===" << std::endl;
+            
+            ShadowWatchDaemon daemon;
+            if (!daemon.start()) {
+                return 1;
+            }
+            
+            // Run daemon until interrupted
+            std::cout << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
+                      << " Press Ctrl+C to stop daemon..." << std::endl;
+            
+            // Simple signal handling for demo
+            bool running = true;
+            signal(SIGINT, [](int) { 
+                std::cout << "\n" << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
+                          << " Received interrupt signal..." << std::endl;
+                exit(0);
+            });
+            
+            // Keep daemon running
+            while (running) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            
+        } else if (watch_command == "status") {
+            std::cout << "=== Shadow Watch Status ===" << std::endl;
+            std::cout << COLOR_YELLOW << "[WATCH] Status command not yet implemented" 
+                      << COLOR_RESET << std::endl;
+            std::cout << "Future: Show daemon status, recent events, statistics" << std::endl;
+            
+        } else if (watch_command == "logs") {
+            std::cout << "=== Shadow Watch Logs ===" << std::endl;
+            std::cout << COLOR_YELLOW << "[WATCH] Logs command not yet implemented" 
+                      << COLOR_RESET << std::endl;
+            std::cout << "Future: Show recent log entries, filter by package/type" << std::endl;
+            
+        } else if (watch_command == "stop") {
+            std::cout << "=== Shadow Watch Stop ===" << std::endl;
+            std::cout << COLOR_YELLOW << "[WATCH] Stop command not yet implemented" 
+                      << COLOR_RESET << std::endl;
+            std::cout << "Future: Signal running daemon to stop gracefully" << std::endl;
+            
+        } else {
+            std::cerr << "Unknown watch command: " << watch_command << std::endl;
+            std::cerr << "Available: start, stop, status, logs" << std::endl;
+            return 1;
+        }
+        
+        return 0;
+    }
+    
+    // Require target for non-watch commands
     if (argc < 3) {
         std::cerr << "Usage:" << std::endl;
         std::cerr << "  shadow analyze <package>[@<version>]        — analyze npm package" << std::endl;
@@ -258,20 +396,22 @@ int main(int argc, char* argv[]) {
         std::cerr << "  shadow apt     <path/to/package.deb>        — analyze local .deb" << std::endl;
         std::cerr << "  shadow pip     <package>                    — analyze pip/PyPI package" << std::endl;
         std::cerr << "  shadow pip     <path/to/package.tar.gz>     — analyze local Python package" << std::endl;
+        std::cerr << "  shadow watch   <start|stop|status|logs>     — EDR daemon control" << std::endl;
         return 1;
     }
 
-    std::string command = argv[1];
     std::string target  = argv[2];
     std::string npm_target = target;
 
     if (command == "analyze") {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
-        std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
-                  << " Target: " << target << "\n" << std::endl;
+        if (g_verbose_mode) {
+            std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                      << " Target: " << target << "\n" << std::endl;
+        }
 
         Observer kernel_observer;
-        if (!kernel_observer.start()) {
+        if (!kernel_observer.start()) {  
             std::cerr << "Failed to initialize kernel security module. Aborting." << std::endl;
             return 1;
         }
@@ -290,21 +430,36 @@ int main(int argc, char* argv[]) {
             "--no-package-lock",
         };
 
-        std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
-                  << " Launching npm inside sandbox..." << std::endl;
+        if (g_verbose_mode) {
+            std::cout << COLOR_CYAN << "[Shadow]" << COLOR_RESET
+                      << " Launching npm inside sandbox..." << std::endl;
+        }
 
         int sandbox_status = sandbox.run("npm", npm_args,
             [&kernel_observer](pid_t child_pid) {
                 kernel_observer.register_sandbox_pid(child_pid);
-            });
+            });  
 
-        std::cout << "[Shadow] Sweeping ring buffer for final events..." << std::endl;
+        if (g_verbose_mode) {
+            std::cout << "[Shadow] Sweeping ring buffer for final events..." << std::endl;
+        }
         sleep(2);
         kernel_observer.stop();
 
-        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir);
+        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir, g_verbose_mode);
 
-        print_verdict(sandbox_status, kernel_observer, diff);
+        // ── Post-install static scan ────────────────────────────────────────────
+        // Run static analysis on installed packages to detect dormant threats
+        // that behaved cleanly during runtime but contain staged payloads
+        StaticScanResult static_scan;
+        
+        // Only run static scan if no runtime threats detected and overlay available
+        if (!kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
+            StaticScanner scanner;
+            static_scan = scanner.scan_node_modules(sandbox.overlay_upper_dir);
+        }
+
+        print_verdict(sandbox_status, kernel_observer, diff, static_scan);
 
     } else if (command == "apt") {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
@@ -374,9 +529,10 @@ int main(int argc, char* argv[]) {
                   << " Package: " << apt.package_name
                   << " " << apt.package_version << std::endl;
 
-        // apt runs scripts without OverlayFS — pass empty DiffResult
+        // apt runs scripts without OverlayFS — pass empty DiffResult and StaticScanResult
         DiffResult empty_diff;
-        print_verdict(overall_status, kernel_observer, empty_diff);
+        StaticScanResult empty_static;
+        print_verdict(overall_status, kernel_observer, empty_diff, empty_static);
 
         apt.cleanup();
 
@@ -436,10 +592,19 @@ int main(int argc, char* argv[]) {
 
         DiffResult diff = analyze_diff(sandbox.overlay_upper_dir);
 
+        // ── Post-install static scan ────────────────────────────────────────────
+        // Run static analysis on installed Python packages
+        StaticScanResult static_scan;
+        
+        if (!kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
+            StaticScanner scanner;
+            static_scan = scanner.scan_node_modules(sandbox.overlay_upper_dir); // Works for Python too
+        }
+
         std::cout << COLOR_CYAN << "[PIP]" << COLOR_RESET
                   << " Package: " << target << std::endl;
 
-        print_verdict(sandbox_status, kernel_observer, diff);
+        print_verdict(sandbox_status, kernel_observer, diff, static_scan);
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;

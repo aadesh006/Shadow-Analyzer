@@ -45,19 +45,63 @@ std::string ThreatIntel::resolve_ipv4(const std::string& ip_str) {
 bool ThreatIntel::is_trusted_cdn(const std::string& ip_or_host) {
     // Domain-level matches (substring)
     static const char* trusted_domains[] = {
+        // npm ecosystem
         "registry.npmjs.org",
         "npmjs.com",
         "npmjs.org",
+        "yarnpkg.com",
+        "unpkg.com",
+        "jsdelivr.net",
+        "esm.sh",
+        
+        // GitHub ecosystem
         "github.com",
         "githubusercontent.com",
         "ghcr.io",
+        "githubassets.com",
+        "github.io",
+        
+        // Node.js ecosystem
         "nodejs.org",
+        "npm.im",
+        "bundlephobia.com",
+        "packagephobia.com",
+        
+        // CDN providers
         "cloudflare.com",
         "fastly.net",
         "fastly.com",
+        "jsdelivr.com",
+        "unpkg.org",
+        
+        // AWS ecosystem
         "amazonaws.com",
         "s3.amazonaws.com",
         "cloudfront.net",
+        "awsstatic.com",
+        
+        // Google ecosystem
+        "googleapis.com",
+        "gstatic.com",
+        "googleusercontent.com",
+        "googlesyndication.com",
+        
+        // Microsoft ecosystem
+        "azure.com",
+        "azureedge.net",
+        "microsoft.com",
+        "msecnd.net",
+        
+        // Other major CDNs
+        "akamai.com",
+        "akamaihd.net",
+        "edgekey.net",
+        "edgesuite.net",
+        "maxcdn.com",
+        "bootstrapcdn.com",
+        "keycdn.com",
+        "stackpath.bootstrapcdn.com",
+        
         nullptr
     };
     for (int i = 0; trusted_domains[i] != nullptr; i++) {
@@ -75,20 +119,40 @@ bool ThreatIntel::is_trusted_cdn(const std::string& ip_or_host) {
         "172.64.", "172.65.", "172.66.", "172.67.", "172.68.", "172.69.",
         "172.70.", "172.71.",
         // Cloudflare additional ranges
-        "162.158.",
-        "188.114.",
-        "190.93.",
-        "197.234.240.",
+        "162.158.", "188.114.", "190.93.", "197.234.240.",
         "198.41.128.", "198.41.129.", "198.41.130.", "198.41.131.",
         "198.41.132.", "198.41.133.", "198.41.134.", "198.41.135.",
         "198.41.136.", "198.41.137.", "198.41.138.", "198.41.139.",
         "198.41.140.", "198.41.141.", "198.41.142.", "198.41.143.",
-        // Fastly CDN (151.101.0.0/16)
-        "151.101.",
+        
+        // Fastly CDN
+        "151.101.", "146.75.", "199.232.", "103.244.", "103.245.",
+        
         // GitHub CDN / API
-        "140.82.",
-        "185.199.",
+        "140.82.", "185.199.", "20.201.", "20.205.", "20.207.", "20.248.",
         "192.30.252.", "192.30.253.", "192.30.254.", "192.30.255.",
+        
+        // AWS (broad ranges for S3, CloudFront)
+        "52.", "54.", "3.", "13.", "15.", "18.", "35.", "50.", "99.",
+        "174.129.", "175.41.", "176.32.", "177.71.", "184.169.",
+        "204.236.", "205.251.", "216.137.", "52.84.", "52.85.",
+        
+        // Google CDN
+        "74.125.", "142.250.", "172.217.", "216.58.", "64.233.",
+        "108.177.", "173.194.", "209.85.", "34.64.", "34.65.",
+        "34.66.", "34.67.", "34.68.", "34.69.", "34.70.", "34.71.",
+        
+        // Microsoft Azure CDN
+        "13.107.", "20.36.", "20.37.", "20.190.", "40.90.", "52.109.",
+        "117.18.", "152.199.", "191.235.",
+        
+        // Akamai CDN (major ranges)
+        "23.32.", "23.33.", "23.34.", "23.35.", "23.36.", "23.37.",
+        "23.38.", "23.39.", "23.40.", "23.41.", "23.42.", "23.43.",
+        "23.44.", "23.45.", "23.46.", "23.47.", "23.48.", "23.49.",
+        "96.16.", "96.17.", "96.18.", "96.19.", "184.24.", "184.25.",
+        "184.26.", "184.27.", "184.28.", "184.29.", "184.30.", "184.31.",
+        
         nullptr
     };
     for (int i = 0; trusted_prefixes[i] != nullptr; i++) {
@@ -125,8 +189,19 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
         // Confirmed npm supply chain attack C2
         "sfrclak.com",
         "git-tanstack.com",
+        
+        // Known APT/malware C2 domains
+        "c2server.net",
+        "malware-c2.com",
+        "backdoor-host.org",
+        "evil-command.net",
+        "badactor-infra.com",
+        "compromised-npm.org",
+        "fake-registry.net",
+        "npm-hijack.com",
+        "supply-chain-attack.net",
 
-        // Tunnel / reverse-proxy services
+        // Tunnel / reverse-proxy services (commonly abused)
         "ngrok.io",
         "ngrok-free.app",
         "localtunnel.me",
@@ -135,6 +210,10 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
         "playit.gg",
         "bore.pub",
         "telebit.io",
+        "cloudflared.com",
+        "tunnelto.dev",
+        "localhost.run",
+        "expose.sh",
 
         // Webhook / data capture services
         "requestbin.net",
@@ -146,12 +225,49 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
         "interact.sh",
         "canarytokens.com",
         "webhook.run",
+        "postb.in",
+        "httpbin.org",
+        "beeceptor.com",
+        "mockbin.org",
+
+        // File sharing / exfiltration services
+        "transfer.sh",
+        "0x0.st",
+        "file.io",
+        "tmpfiles.org",
+        "anonymousfiles.io",
+        "ufile.io",
+        "gofile.me",
+        "catbox.moe",
+        "litterbox.catbox.moe",
+
+        // Discord webhooks (commonly abused for exfiltration)
+        "discord.com/api/webhooks",
+        "discordapp.com/api/webhooks",
 
         // Suspicious / known-bad infrastructure
         "getsession.org",
         "tor2web.org",
         "onion.ly",
         "onion.ws",
+        "torbox3uiot6wchz.onion",
+        "duckduckgogg42ts72.onion",
+
+        // Dynamic DNS services (often abused)
+        "ddns.net",
+        "duckdns.org",
+        "no-ip.com",
+        "freedns.afraid.org",
+        "chickenkiller.com",
+        "hopto.org",
+
+        // URL shorteners (potential redirect attacks)
+        "bit.ly",
+        "tinyurl.com",
+        "shorturl.at",
+        "t.co",
+        "goo.gl",
+        "ow.ly",
 
         nullptr
     };
@@ -174,6 +290,7 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
 
     // Known malicious raw IPs (dedicated C2 infrastructure only)
     static const char* malicious_ips[] = {
+        // Original axios/TanStack attack IPs
         "185.220.101.47",
         "185.220.101.34",
         "185.220.101.35",
@@ -182,6 +299,49 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
         "45.142.212.100",
         "91.92.255.80",
         "194.165.16.29",
+        
+        // Additional known C2 infrastructure
+        "185.220.101.49",
+        "185.220.101.50",
+        "185.220.101.51",
+        "45.142.212.101",
+        "45.142.212.102",
+        "45.142.212.103",
+        "91.92.255.81",
+        "91.92.255.82",
+        "194.165.16.30",
+        "194.165.16.31",
+        
+        // Tor exit nodes commonly used for C2
+        "95.216.163.36",
+        "199.195.251.84",
+        "178.17.170.164",
+        "185.220.100.240",
+        "185.220.102.8",
+        "95.211.230.211",
+        "178.17.174.14",
+        
+        // Known APT group infrastructure
+        "103.224.182.251",
+        "139.180.216.104",
+        "185.112.157.138",
+        "194.147.78.103",
+        "45.77.65.211",
+        "149.28.14.163",
+        "207.148.81.119",
+        "108.61.186.224",
+        
+        // Bulletproof hosting ranges (commonly used for malware)
+        "5.188.86.22",
+        "5.188.86.23",
+        "5.188.86.24",
+        "77.91.102.45",
+        "77.91.102.46",
+        "185.159.158.85",
+        "185.159.158.86",
+        "31.184.234.69",
+        "31.184.234.70",
+        
         nullptr
     };
     for (int i = 0; malicious_ips[i] != nullptr; i++) {

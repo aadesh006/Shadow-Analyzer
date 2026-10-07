@@ -273,29 +273,41 @@ The build pipeline:
 
 ```bash
 # npm/Node.js packages
-sudo ./shadow analyze <package>
-sudo ./shadow analyze <package>@<version>
-sudo ./shadow analyze <path/to/package.tgz>
+sudo shadow analyze <package> [--verbose]
+sudo shadow analyze <package>@<version> [--verbose]
+sudo shadow analyze <path/to/package.tgz> [--verbose]
 
 # Python/pip packages  
-sudo ./shadow pip <package>
-sudo ./shadow pip <path/to/package.tar.gz>
+sudo shadow pip <package> [--verbose]
+sudo shadow pip <path/to/package.tar.gz> [--verbose]
 
 # apt/deb packages
-sudo ./shadow apt <package>
-sudo ./shadow apt <path/to/package.deb>
+sudo shadow apt <package> [--verbose]
+sudo shadow apt <path/to/package.deb> [--verbose]
 
 # Examples
-sudo ./shadow analyze lodash
-sudo ./shadow analyze axios@1.14.1
-sudo ./shadow analyze /home/user/suspicious-package.tgz
-
-sudo ./shadow pip requests
-sudo ./shadow pip /tmp/malicious-package.tar.gz
-
-sudo ./shadow apt curl
-sudo ./shadow apt /home/user/suspicious.deb
+sudo shadow analyze lodash
+sudo shadow analyze axios@1.14.1 --verbose
+sudo shadow pip requests --verbose
+sudo shadow apt curl
 ```
+
+### Output Modes
+
+**Default Mode (Clean):**
+```
+=== Shadow Analyzer v1.0 ===
+[RESULT] CLEAN — No threats detected.
+```
+
+**Verbose Mode (Detailed):**
+```bash
+sudo shadow analyze axios --verbose
+```
+Shows detailed logs including eBPF events, network connections, filesystem changes, and static analysis progress.
+
+### Options
+- `--verbose` : Show detailed analysis logs (useful for debugging and investigation)
 
 Shadow must be run as root. Analysis completes in the time the package manager takes to install the package (1–30 seconds). If the package stalls, Shadow kills the sandbox after 60 seconds.
 
