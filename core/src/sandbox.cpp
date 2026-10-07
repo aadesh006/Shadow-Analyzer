@@ -42,6 +42,108 @@ Sandbox::Sandbox() {}
 Sandbox::~Sandbox() {}
 
 // ---------------------------------------------------------------------------
+// setup_sandbox_network()
+//
+// Called from the host side after clone() returns, before the child runs.
+// Sets up a veth pair giving the sandbox controlled outbound internet access:
+//
+//   Host side:   veth_shadow0  — 10.88.0.1/30, stays in host net namespace
+//   Child side:  veth_shadow1  — 10.88.0.2/30, moved into sandbox net namespace
+//
+// iptables MASQUERADE on the host lets sandbox traffic reach the internet
+// through the host's default interface. DNS (port 53) is allowed so npm
+// can resolve registry.npmjs.org. All other traffic is observed by the
+// eBPF connect tracepoint before it leaves the host.
+//
+// On teardown, the veth pair is deleted automatically when the sandbox
+// net namespace is destroyed (sandbox exit). The iptables rule is removed
+// explicitly in teardown_sandbox_network().
+//
+// Returns true if setup succeeded, false if anything failed (sandbox still
+// runs but without network isolation — analysis continues with a warning).
+// ---------------------------------------------------------------------------
+static bool setup_sandbox_network(pid_t child_pid) {
+    char cmd[512];
+    int rc;
+
+    // 1. Create veth pair on the host
+    rc = system("ip link add veth_shadow0 type veth peer name veth_shadow1 2>/dev/null");
+    if (rc != 0) {
+        std::cerr << COLOR_YELLOW
+                  << "[NET] Failed to create veth pair — network isolation unavailable."
+                  << COLOR_RESET << std::endl;
+        return false;
+    }
+
+    // 2. Move veth_shadow1 into the sandbox's network namespace
+    snprintf(cmd, sizeof(cmd),
+             "ip link set veth_shadow1 netns /proc/%d/ns/net 2>/dev/null", child_pid);
+    rc = system(cmd);
+    if (rc != 0) {
+        system("ip link del veth_shadow0 2>/dev/null");
+        std::cerr << COLOR_YELLOW
+                  << "[NET] Failed to move veth into sandbox namespace."
+                  << COLOR_RESET << std::endl;
+        return false;
+    }
+
+    // 3. Configure host side
+    system("ip addr add 10.88.0.1/30 dev veth_shadow0 2>/dev/null");
+    system("ip link set veth_shadow0 up 2>/dev/null");
+
+    // 4. Configure sandbox side (runs in the child's net namespace via nsenter)
+    snprintf(cmd, sizeof(cmd),
+             "nsenter --net=/proc/%d/ns/net -- ip addr add 10.88.0.2/30 dev veth_shadow1 2>/dev/null",
+             child_pid);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "nsenter --net=/proc/%d/ns/net -- ip link set veth_shadow1 up 2>/dev/null",
+             child_pid);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "nsenter --net=/proc/%d/ns/net -- ip link set lo up 2>/dev/null",
+             child_pid);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "nsenter --net=/proc/%d/ns/net -- ip route add default via 10.88.0.1 2>/dev/null",
+             child_pid);
+    system(cmd);
+
+    // 5. Enable IP forwarding on the host
+    system("echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null");
+
+    // 6. iptables MASQUERADE — lets sandbox traffic reach internet via host's interface
+    system("iptables -t nat -A POSTROUTING -s 10.88.0.0/30 ! -d 10.88.0.0/30 -j MASQUERADE 2>/dev/null");
+
+    // 7. Allow forwarding for the veth pair
+    system("iptables -A FORWARD -i veth_shadow0 -j ACCEPT 2>/dev/null");
+    system("iptables -A FORWARD -o veth_shadow0 -j ACCEPT 2>/dev/null");
+
+    std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
+              << " Network namespace active. Sandbox: 10.88.0.2 → Host: 10.88.0.1 → internet"
+              << std::endl;
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// teardown_sandbox_network()
+//
+// Removes the iptables rules added by setup_sandbox_network().
+// The veth pair itself is cleaned up automatically when the sandbox exits
+// (the peer end veth_shadow0 is deleted when veth_shadow1's namespace dies).
+// ---------------------------------------------------------------------------
+static void teardown_sandbox_network() {
+    system("iptables -t nat -D POSTROUTING -s 10.88.0.0/30 ! -d 10.88.0.0/30 -j MASQUERADE 2>/dev/null");
+    system("iptables -D FORWARD -i veth_shadow0 -j ACCEPT 2>/dev/null");
+    system("iptables -D FORWARD -o veth_shadow0 -j ACCEPT 2>/dev/null");
+    system("ip link del veth_shadow0 2>/dev/null");
+}
+
+// ---------------------------------------------------------------------------
 // setup_overlay_dirs()
 //
 // Creates the four OverlayFS directories on the host side.
@@ -313,12 +415,24 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     ChildArgs child_args = { command.c_str(), c_args.data() };
     std::cout << "[Shadow] Spawning isolated namespaces" << std::endl;
 
-    int flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER;
+    // CLONE_NEWNET gives the sandbox its own empty network namespace.
+    // setup_sandbox_network() creates a veth pair after clone() returns,
+    // giving the sandbox controlled outbound access through the host.
+    int flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID |
+                CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWNET;
     pid_t child_pid = clone(child_entry, stack_top, flags, &child_args);
 
     if (child_pid == -1) { delete[] stack; return -1; }
     std::cout << "[Shadow] Sandbox created. Host mapped PID: " << child_pid << std::endl;
     if (on_spawn) on_spawn(child_pid);
+
+    // Set up network bridge before writing UID/GID maps (child is still paused)
+    bool net_ok = setup_sandbox_network(child_pid);
+    if (!net_ok) {
+        std::cout << COLOR_YELLOW
+                  << "[Shadow] Continuing without network isolation."
+                  << COLOR_RESET << std::endl;
+    }
 
     // Write UID/GID maps to complete CLONE_NEWUSER setup
     const char* sudo_uid = getenv("SUDO_UID");
@@ -366,6 +480,9 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     }
 
     std::cout << "[Shadow] Sandbox execution completed." << std::endl;
+
+    // Clean up iptables rules — veth pair auto-removed when sandbox net ns dies
+    teardown_sandbox_network();
 
     delete[] stack;
     return WEXITSTATUS(status);
