@@ -23,12 +23,11 @@ core/src/bpf/vmlinux.h
 
 # ─── Test Suite ──────────────────────────────────────────────────────────────
 # Track test source files but ignore the large Catch2 amalgamated headers
-# and compiled test binaries
 tests/catch2/catch_amalgamated.hpp
 tests/catch2/catch_amalgamated.cpp
 
 # ─── Test Package Artifacts ──────────────────────────────────────────────────
-# Keep source dirs (preinstall.js, package.json, DEBIAN/), ignore built artifacts
+# Track source dirs and scripts, ignore built .tgz/.deb artifacts only
 test-packages/*.tgz
 test-packages/*.deb
 
@@ -50,3 +49,4 @@ test-packages/*.deb
 
 # ─── Session exports ─────────────────────────────────────────────────────────
 shadow-dev-session.json
+*.json

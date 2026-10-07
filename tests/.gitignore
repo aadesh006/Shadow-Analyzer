@@ -1,0 +1,10 @@
+# Test output and temporary files
+results/
+*.log
+.npm/
+node_modules/
+package-lock.json
+
+# Test package tarballs
+*.tgz
+*.tar.gz
