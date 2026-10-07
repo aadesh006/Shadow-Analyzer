@@ -66,61 +66,76 @@ static bool setup_sandbox_network(pid_t child_pid) {
     char cmd[512];
     int rc;
 
+    std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
+              << " Setting up network namespace isolation..." << std::endl;
+
     // 1. Create veth pair on the host
-    rc = system("ip link add veth_shadow0 type veth peer name veth_shadow1 2>/dev/null");
+    rc = system("ip link add veth_shadow0 type veth peer name veth_shadow1 2>&1");
     if (rc != 0) {
-        std::cerr << COLOR_YELLOW
-                  << "[NET] Failed to create veth pair — network isolation unavailable."
+        std::cerr << COLOR_RED
+                  << "[NET] ERROR: Failed to create veth pair. Check if running as root and kernel supports veth."
                   << COLOR_RESET << std::endl;
         return false;
     }
 
     // 2. Move veth_shadow1 into the sandbox's network namespace
     snprintf(cmd, sizeof(cmd),
-             "ip link set veth_shadow1 netns /proc/%d/ns/net 2>/dev/null", child_pid);
+             "ip link set veth_shadow1 netns /proc/%d/ns/net", child_pid);
     rc = system(cmd);
     if (rc != 0) {
         system("ip link del veth_shadow0 2>/dev/null");
-        std::cerr << COLOR_YELLOW
-                  << "[NET] Failed to move veth into sandbox namespace."
+        std::cerr << COLOR_RED
+                  << "[NET] ERROR: Failed to move veth into sandbox namespace."
                   << COLOR_RESET << std::endl;
         return false;
     }
 
     // 3. Configure host side
-    system("ip addr add 10.88.0.1/30 dev veth_shadow0 2>/dev/null");
-    system("ip link set veth_shadow0 up 2>/dev/null");
+    system("ip addr add 10.88.0.1/30 dev veth_shadow0");
+    system("ip link set veth_shadow0 up");
 
     // 4. Configure sandbox side (runs in the child's net namespace via nsenter)
     snprintf(cmd, sizeof(cmd),
-             "nsenter --net=/proc/%d/ns/net -- ip addr add 10.88.0.2/30 dev veth_shadow1 2>/dev/null",
+             "nsenter --net=/proc/%d/ns/net -- ip addr add 10.88.0.2/30 dev veth_shadow1",
              child_pid);
     system(cmd);
 
     snprintf(cmd, sizeof(cmd),
-             "nsenter --net=/proc/%d/ns/net -- ip link set veth_shadow1 up 2>/dev/null",
+             "nsenter --net=/proc/%d/ns/net -- ip link set veth_shadow1 up",
              child_pid);
     system(cmd);
 
     snprintf(cmd, sizeof(cmd),
-             "nsenter --net=/proc/%d/ns/net -- ip link set lo up 2>/dev/null",
+             "nsenter --net=/proc/%d/ns/net -- ip link set lo up",
              child_pid);
     system(cmd);
 
     snprintf(cmd, sizeof(cmd),
-             "nsenter --net=/proc/%d/ns/net -- ip route add default via 10.88.0.1 2>/dev/null",
+             "nsenter --net=/proc/%d/ns/net -- ip route add default via 10.88.0.1",
              child_pid);
     system(cmd);
 
-    // 5. Enable IP forwarding on the host
-    system("echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null");
+    // 5. Configure DNS in the sandbox by copying host's resolv.conf
+    snprintf(cmd, sizeof(cmd),
+             "nsenter --net=/proc/%d/ns/net --mount=/proc/%d/ns/mnt -- cp /old_root/etc/resolv.conf /etc/resolv.conf 2>/dev/null || "
+             "nsenter --net=/proc/%d/ns/net --mount=/proc/%d/ns/mnt -- echo 'nameserver 8.8.8.8' > /etc/resolv.conf",
+             child_pid, child_pid, child_pid, child_pid);
+    system(cmd);
 
-    // 6. iptables MASQUERADE — lets sandbox traffic reach internet via host's interface
-    system("iptables -t nat -A POSTROUTING -s 10.88.0.0/30 ! -d 10.88.0.0/30 -j MASQUERADE 2>/dev/null");
+    // 6. Enable IP forwarding on the host
+    system("echo 1 > /proc/sys/net/ipv4/ip_forward");
 
-    // 7. Allow forwarding for the veth pair
-    system("iptables -A FORWARD -i veth_shadow0 -j ACCEPT 2>/dev/null");
-    system("iptables -A FORWARD -o veth_shadow0 -j ACCEPT 2>/dev/null");
+    // 7. iptables MASQUERADE — lets sandbox traffic reach internet via host's interface
+    rc = system("iptables -t nat -A POSTROUTING -s 10.88.0.0/30 ! -d 10.88.0.0/30 -j MASQUERADE");
+    if (rc != 0) {
+        std::cerr << COLOR_YELLOW
+                  << "[NET] WARNING: iptables MASQUERADE rule failed. Sandbox may not have internet access."
+                  << COLOR_RESET << std::endl;
+    }
+
+    // 8. Allow forwarding for the veth pair
+    system("iptables -A FORWARD -i veth_shadow0 -j ACCEPT");
+    system("iptables -A FORWARD -o veth_shadow0 -j ACCEPT");
 
     std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
               << " Network namespace active. Sandbox: 10.88.0.2 → Host: 10.88.0.1 → internet"
@@ -429,9 +444,14 @@ int Sandbox::run(const std::string& command, const std::vector<std::string>& arg
     // Set up network bridge before writing UID/GID maps (child is still paused)
     bool net_ok = setup_sandbox_network(child_pid);
     if (!net_ok) {
-        std::cout << COLOR_YELLOW
-                  << "[Shadow] Continuing without network isolation."
+        std::cerr << COLOR_RED
+                  << "[Shadow] Network isolation setup failed. Aborting analysis."
+                  << "\n         Run with --no-network flag to disable network isolation (planned feature)."
                   << COLOR_RESET << std::endl;
+        kill(child_pid, SIGKILL);
+        waitpid(child_pid, nullptr, 0);
+        delete[] stack;
+        return 1;
     }
 
     // Write UID/GID maps to complete CLONE_NEWUSER setup
