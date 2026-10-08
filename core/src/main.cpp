@@ -597,7 +597,7 @@ int main(int argc, char* argv[]) {
         sleep(2);
         kernel_observer.stop();
 
-        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir);
+        DiffResult diff = analyze_diff(sandbox.overlay_upper_dir, g_verbose_mode);
 
         // ── Post-install static scan ────────────────────────────────────────────
         // Run static analysis on installed Python packages

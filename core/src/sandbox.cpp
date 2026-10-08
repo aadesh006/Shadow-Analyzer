@@ -282,7 +282,9 @@ bool construct_prison(const char *target_path) {
     std::string tmp_target = std::string(jail_dir) + "/tmp";
     if (access(OVERLAY_MERGE, F_OK) == 0) {
         if (mount(OVERLAY_MERGE, tmp_target.c_str(), "bind", MS_BIND | MS_REC, NULL) == 0) {
-            std::cout << "  [Prison] OverlayFS /tmp mounted — filesystem diff active." << std::endl;
+            if (g_verbose_mode) {
+                std::cout << "  [Prison] OverlayFS /tmp mounted — filesystem diff active." << std::endl;
+            }
         } else {
             // Bind failed (e.g. overlayfs not mounted) — fall back to tmpfs
             mount("tmpfs", tmp_target.c_str(), "tmpfs", 0, "size=500m,mode=777");
@@ -328,12 +330,16 @@ bool construct_prison(const char *target_path) {
 int Sandbox::child_entry(void* arg) {
     ChildArgs* args = static_cast<ChildArgs*>(arg);
 
-    std::cout << "  [Prison] Sandbox Paused. Awaiting identity injection from Host..." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "  [Prison] Sandbox Paused. Awaiting identity injection from Host..." << std::endl;
+    }
     sleep(1);
 
     if (!construct_prison(args->argv[2])) return -1;
 
-    std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "  [Prison] Host filesystem amputated successfully." << std::endl;
+    }
 
     const char* sudo_uid = getenv("SUDO_UID");
     const char* sudo_gid = getenv("SUDO_GID");
@@ -357,14 +363,18 @@ int Sandbox::child_entry(void* arg) {
         write(pfd, ctx, strlen(ctx));
         close(pfd);
         chown(pkg_json_path.c_str(), target_uid, target_gid);
-        std::cout << "  [Prison] Sandbox context created." << std::endl;
+        if (g_verbose_mode) {
+            std::cout << "  [Prison] Sandbox context created." << std::endl;
+        }
     }
 
     // Drop privileges
     setgid(target_gid);
     setuid(target_uid);
 
-    std::cout << "  [Prison] Sandbox identity downgraded to UID: " << getuid() << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "  [Prison] Sandbox identity downgraded to UID: " << getuid() << std::endl;
+    }
 
     if (chdir(install_dir) == -1) return -1;
 

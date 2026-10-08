@@ -254,8 +254,10 @@ void Observer::stop() {
     if (skel) {
         shadow_bpf__destroy(skel);
         skel = nullptr;
-        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
-                  << " Kernel hooks detached." << std::endl;
+        if (g_verbose_mode) {
+            std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                      << " Kernel hooks detached." << std::endl;
+        }
     }
 }
 
@@ -288,11 +290,13 @@ if (comm == "systemd-resolve" ||
 
     if (e->family == 10) { // AF_INET6
     // npm legitimately uses IPv6 to reach registry.npmjs.org
-    std::cout << "  " COLOR_CYAN "[NET6]" COLOR_RESET
-              << " PID: " << e->pid
-              << " Process: " << e->comm
-              << " IPv6 outbound"
-              << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "  " COLOR_CYAN "[NET6]" COLOR_RESET
+                  << " PID: " << e->pid
+                  << " Process: " << e->comm
+                  << " IPv6 outbound"
+                  << std::endl;
+    }
     // Do NOT set threat_detected for IPv6 until proper classification exists
     }
 
@@ -341,11 +345,13 @@ if (comm == "systemd-resolve" ||
                       << std::endl;
             self->suspicious_connections++;
         } else {
-            std::cout << "  " COLOR_GREEN "[NET]" COLOR_RESET
-                      << " PID: " << e->pid
-                      << " -> " << display_host
-                      << " Port: " << e->dest_port
-                      << std::endl;
+            if (g_verbose_mode) {
+                std::cout << "  " COLOR_GREEN "[NET]" COLOR_RESET
+                          << " PID: " << e->pid
+                          << " -> " << display_host
+                          << " Port: " << e->dest_port
+                          << std::endl;
+            }
         }
     }
 }
