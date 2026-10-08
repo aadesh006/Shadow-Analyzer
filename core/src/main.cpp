@@ -458,10 +458,20 @@ int main(int argc, char* argv[]) {
         // ── Post-install static scan ────────────────────────────────────────────
         // Run static analysis on installed packages to detect dormant threats
         // that behaved cleanly during runtime but contain staged payloads
+        // 
+        // NOTE: Currently disabled due to high false positive rate.
+        // TODO: Fix false positives by:
+        //   1. Ignoring .min.js, .map files
+        //   2. Ignoring dist/, build/ directories  
+        //   3. Using only high-confidence patterns
+        //   4. Adding ML-based detection
+        // Re-enable with: --enable-static-scan flag (Phase 4)
         StaticScanResult static_scan;
         
-        // Only run static scan if no runtime threats detected and overlay available
-        if (!kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
+        bool enable_static_scan = false; // Disabled until false positives are fixed
+        
+        // Only run static scan if enabled, no runtime threats, and overlay available
+        if (enable_static_scan && !kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
             StaticScanner scanner;
             static_scan = scanner.scan_node_modules(sandbox.overlay_upper_dir);
         }
@@ -601,9 +611,12 @@ int main(int argc, char* argv[]) {
 
         // ── Post-install static scan ────────────────────────────────────────────
         // Run static analysis on installed Python packages
+        // NOTE: Currently disabled due to high false positive rate (see analyze command)
         StaticScanResult static_scan;
         
-        if (!kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
+        bool enable_static_scan = false; // Disabled until false positives are fixed
+        
+        if (enable_static_scan && !kernel_observer.threat_detected && !sandbox.overlay_upper_dir.empty()) {
             StaticScanner scanner;
             static_scan = scanner.scan_node_modules(sandbox.overlay_upper_dir); // Works for Python too
         }

@@ -163,6 +163,7 @@ Docker's overhead per syscall is also significantly higher. Shadow's eBPF tracep
 | OverlayFS filesystem delta (`shadow diff`) | ✅ Working |
 | apt/deb package support | ✅ Working |
 | pip/PyPI package support | ✅ Working |
+| Static code analysis for dormant threats | 🔧 Disabled (high false positives - being fixed) |
 | `shadow watch` — continuous host EDR daemon | ⏳ Planned |
 | `shadow policy sync` — remote threat feed | ⏳ Planned |
 | GitHub Actions integration | ⏳ Planned |
