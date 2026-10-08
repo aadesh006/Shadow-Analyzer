@@ -242,7 +242,8 @@ static DiffResult analyze_diff(const std::string& upper_dir, bool verbose = fals
 static void print_verdict(int sandbox_status,
                            const Observer& obs,
                            const DiffResult& diff,
-                           const StaticScanResult& static_scan = {}) {
+                           const StaticScanResult& static_scan = {},
+                           bool verbose = false) {
     std::cout << "\n[Shadow] ══════════════ ANALYSIS COMPLETE ══════════════\n";
 
     if (sandbox_status == 124) {
@@ -258,20 +259,26 @@ static void print_verdict(int sandbox_status,
     } else if (static_scan.has_findings) {
         std::cout << COLOR_YELLOW
                   << "[RESULT] SUSPICIOUS — Static analysis flagged "
-                  << static_scan.findings.size() << " dormant threat(s):\n";
-        for (const auto& f : static_scan.findings) {
-            std::cout << "           • " << f << "\n";
+                  << static_scan.findings.size() << " dormant threat(s).\n";
+        if (verbose) {
+            for (const auto& f : static_scan.findings) {
+                std::cout << "           • " << f << "\n";
+            }
         }
         std::cout << "         Package may contain staged payloads or obfuscated malware."
+                  << (verbose ? "" : " Use --verbose for details.")
                   << COLOR_RESET << std::endl;
     } else if (diff.has_findings) {
         std::cout << COLOR_YELLOW
                   << "[RESULT] SUSPICIOUS — Filesystem analysis flagged "
-                  << diff.findings.size() << " issue(s):\n";
-        for (const auto& f : diff.findings) {
-            std::cout << "           • " << f << "\n";
+                  << diff.findings.size() << " issue(s).\n";
+        if (verbose) {
+            for (const auto& f : diff.findings) {
+                std::cout << "           • " << f << "\n";
+            }
         }
         std::cout << "         Manual review recommended before installing."
+                  << (verbose ? "" : " Use --verbose for details.")
                   << COLOR_RESET << std::endl;
     } else if (obs.suspicious_connections > 0) {
         std::cout << COLOR_YELLOW
@@ -459,7 +466,7 @@ int main(int argc, char* argv[]) {
             static_scan = scanner.scan_node_modules(sandbox.overlay_upper_dir);
         }
 
-        print_verdict(sandbox_status, kernel_observer, diff, static_scan);
+        print_verdict(sandbox_status, kernel_observer, diff, static_scan, g_verbose_mode);
 
     } else if (command == "apt") {
         std::cout << "=== Shadow Analyzer v1.0 ===" << std::endl;
@@ -532,7 +539,7 @@ int main(int argc, char* argv[]) {
         // apt runs scripts without OverlayFS — pass empty DiffResult and StaticScanResult
         DiffResult empty_diff;
         StaticScanResult empty_static;
-        print_verdict(overall_status, kernel_observer, empty_diff, empty_static);
+        print_verdict(overall_status, kernel_observer, empty_diff, empty_static, g_verbose_mode);
 
         apt.cleanup();
 
@@ -604,7 +611,7 @@ int main(int argc, char* argv[]) {
         std::cout << COLOR_CYAN << "[PIP]" << COLOR_RESET
                   << " Package: " << target << std::endl;
 
-        print_verdict(sandbox_status, kernel_observer, diff, static_scan);
+        print_verdict(sandbox_status, kernel_observer, diff, static_scan, g_verbose_mode);
 
     } else {
         std::cerr << "Unknown command: " << command << std::endl;
