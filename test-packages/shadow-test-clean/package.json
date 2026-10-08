@@ -1,9 +1,0 @@
-{
-  "name": "shadow-test-clean",
-  "version": "1.0.0",
-  "description": "Safe test package that should produce a CLEAN verdict — writes files, makes CDN requests, spawns only node.",
-  "scripts": {
-    "preinstall": "node preinstall.js"
-  },
-  "license": "MIT"
-}

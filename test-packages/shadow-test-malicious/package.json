@@ -1,9 +1,0 @@
-{
-  "name": "shadow-test-malicious",
-  "version": "1.0.0",
-  "description": "Safe test package that triggers all Shadow detection paths. Does nothing harmful outside the sandbox.",
-  "scripts": {
-    "preinstall": "node preinstall.js"
-  },
-  "license": "MIT"
-}

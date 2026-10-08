@@ -9,8 +9,55 @@ echo
 TEST_DIR="/tmp/shadow_advanced_test_$$"
 mkdir -p "$TEST_DIR/node_modules/shadow-test-advanced-threats"
 
-# Copy our enhanced test package to the mock location
-cp -r /home/aadesh/Desktop/Shadow/test-packages/shadow-test-advanced-threats/* "$TEST_DIR/node_modules/shadow-test-advanced-threats/"
+# Create enhanced test package inline with advanced obfuscation patterns
+cat > "$TEST_DIR/node_modules/shadow-test-advanced-threats/package.json" << 'EOF'
+{
+  "name": "shadow-test-advanced-threats",
+  "version": "2.0.0",
+  "description": "Test package with advanced obfuscation techniques"
+}
+EOF
+
+cat > "$TEST_DIR/node_modules/shadow-test-advanced-threats/index.js" << 'EOF'
+// Advanced obfuscation test package
+const os = require('os');
+
+// 1. String concatenation obfuscation
+const dangerousFunc = "ev" + "al";
+const hiddenEval = "e.v.a.l".split('.').join('');
+
+// 2. Function constructor patterns
+function executePayload(code) {
+    const func = new Function('return ' + code);
+    return func();
+}
+
+// 3. Encrypted/encoded strings
+const hexPayload = "636f6e736f6c652e6c6f67";
+const xorPayload = [0x21, 0x29, 0x2b, 0x38];
+
+// 4. Anti-analysis techniques
+function antiDebug() {
+    const start = performance.now();
+    debugger;
+    const end = performance.now();
+    if (end - start > 100) {
+        process.exit(1);
+    }
+}
+
+// 5. Environment fingerprinting
+function shouldExecutePayload() {
+    const platform = process.platform;
+    const nodeVersion = process.version;
+    const username = process.env.USER || process.env.USERNAME;
+    const hostname = os.hostname();
+    const arch = process.arch;
+    return platform === 'linux' && arch === 'x64';
+}
+
+module.exports = { dangerousFunc, executePayload, antiDebug, shouldExecutePayload };
+EOF
 
 echo "Enhanced test package deployed to: $TEST_DIR/node_modules/"
 echo "Package contains advanced threats:"

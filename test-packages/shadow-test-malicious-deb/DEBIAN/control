@@ -1,7 +1,0 @@
-Package: shadow-test-malicious
-Version: 1.0.0
-Architecture: all
-Maintainer: Shadow Analyzer Test <test@shadow.local>
-Description: Safe test package that triggers all Shadow detection paths.
- Exercises every eBPF hook via the postinst maintainer script.
- Does nothing harmful outside the sandbox.
