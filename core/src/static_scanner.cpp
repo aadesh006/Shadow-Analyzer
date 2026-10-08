@@ -1,4 +1,5 @@
 #include "../include/static_scanner.h"
+#include "../include/common.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -26,8 +27,10 @@ StaticScanResult StaticScanner::scan_node_modules(const std::string& overlay_upp
         return result; // No overlay dir means no files to scan
     }
     
-    std::cout << COLOR_CYAN << "[STATIC]" << COLOR_RESET
-              << " Scanning installed packages for dormant threats..." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << COLOR_CYAN << "[STATIC]" << COLOR_RESET
+                  << " Scanning installed packages for dormant threats..." << std::endl;
+    }
     
     // Recursively scan the overlay upper directory
     std::function<void(const std::string&)> scan_dir = [&](const std::string& dir_path) {
@@ -61,15 +64,17 @@ StaticScanResult StaticScanner::scan_node_modules(const std::string& overlay_upp
     
     scan_dir(overlay_upper_dir);
     
-    std::cout << COLOR_CYAN << "[STATIC]" << COLOR_RESET
-              << " Scanned " << result.files_scanned << " files";
-    
-    if (result.has_findings) {
-        std::cout << ", found " << result.findings.size() << " suspicious pattern(s).";
-    } else {
-        std::cout << ", no suspicious patterns detected.";
+    if (g_verbose_mode) {
+        std::cout << COLOR_CYAN << "[STATIC]" << COLOR_RESET
+                  << " Scanned " << result.files_scanned << " files";
+        
+        if (result.has_findings) {
+            std::cout << ", found " << result.findings.size() << " suspicious pattern(s).";
+        } else {
+            std::cout << ", no suspicious patterns detected.";
+        }
+        std::cout << std::endl;
     }
-    std::cout << std::endl;
     
     return result;
 }

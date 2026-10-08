@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <ftw.h>
 #include "../include/sandbox.h"
+#include "../include/common.h"
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_RED     "\033[1;31m"
@@ -66,8 +67,10 @@ static bool setup_sandbox_network(pid_t child_pid) {
     char cmd[512];
     int rc;
 
-    std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
-              << " Setting up network namespace isolation..." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
+                  << " Setting up network namespace isolation..." << std::endl;
+    }
 
     // 1. Create veth pair on the host
     rc = system("ip link add veth_shadow0 type veth peer name veth_shadow1 2>&1");
@@ -137,9 +140,11 @@ static bool setup_sandbox_network(pid_t child_pid) {
     system("iptables -A FORWARD -i veth_shadow0 -j ACCEPT");
     system("iptables -A FORWARD -o veth_shadow0 -j ACCEPT");
 
-    std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
-              << " Network namespace active. Sandbox: 10.88.0.2 → Host: 10.88.0.1 → internet"
-              << std::endl;
+    if (g_verbose_mode) {
+        std::cout << COLOR_MAGENTA << "[NET]" << COLOR_RESET
+                  << " Network namespace active. Sandbox: 10.88.0.2 → Host: 10.88.0.1 → internet"
+                  << std::endl;
+    }
 
     return true;
 }

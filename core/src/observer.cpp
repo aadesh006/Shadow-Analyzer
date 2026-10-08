@@ -1,5 +1,6 @@
 #include "../include/observer.h"
 #include "../include/threat_intel.h"
+#include "../include/common.h"
 #include "../bpf/shadow.skel.h"
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -45,7 +46,9 @@ Observer::~Observer() {
 }
 
 static void inject_dynamic_rules(struct shadow_bpf *skel) {
-    std::cout << "[Shadow] Loading dynamic threat intelligence..." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "[Shadow] Loading dynamic threat intelligence..." << std::endl;
+    }
 
     // Check multiple locations
     std::vector<std::string> rule_paths = {
@@ -58,7 +61,9 @@ static void inject_dynamic_rules(struct shadow_bpf *skel) {
     for (const auto& path : rule_paths) {
         infile.open(path);
         if (infile.is_open()) {
-            std::cout << "[Shadow] Rules loaded from: " << path << std::endl;
+            if (g_verbose_mode) {
+                std::cout << "[Shadow] Rules loaded from: " << path << std::endl;
+            }
             break;
         }
     }
@@ -83,14 +88,18 @@ static void inject_dynamic_rules(struct shadow_bpf *skel) {
         uint32_t value = 1; // 1 = block
 
         if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) == 0) {
-            std::cout << "  " COLOR_RED "[RULE]" COLOR_RESET
-                      << " LSM block active: " << key.name << std::endl;
+            if (g_verbose_mode) {
+                std::cout << "  " COLOR_RED "[RULE]" COLOR_RESET
+                          << " LSM block active: " << key.name << std::endl;
+            }
             count++;
         }
     }
 
-    std::cout << "[Shadow] " << count
-              << " rules injected into Ring 0 kernel map." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "[Shadow] " << count
+                  << " rules injected into Ring 0 kernel map." << std::endl;
+    }
 }
 
 void Observer::register_sandbox_pid(pid_t pid) {
@@ -122,8 +131,10 @@ void Observer::register_sandbox_pid(pid_t pid) {
     uint32_t key = 0;
     int ns_map_fd = bpf_map__fd(skel->maps.sandbox_ns);
     if (bpf_map_update_elem(ns_map_fd, &key, &ns_inum, BPF_ANY) == 0) {
-        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
-                  << " Sandbox PID namespace registered: inum=" << ns_inum << std::endl;
+        if (g_verbose_mode) {
+            std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                      << " Sandbox PID namespace registered: inum=" << ns_inum << std::endl;
+        }
     }
 
     // --- Secondary: register host-side sandbox root PID ---
@@ -132,8 +143,10 @@ void Observer::register_sandbox_pid(pid_t pid) {
     uint32_t host_pid = static_cast<uint32_t>(pid);
     int pid_map_fd = bpf_map__fd(skel->maps.sandbox_root_pid);
     if (bpf_map_update_elem(pid_map_fd, &key, &host_pid, BPF_ANY) == 0) {
-        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
-                  << " Sandbox root PID registered: host_pid=" << host_pid << std::endl;
+        if (g_verbose_mode) {
+            std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                      << " Sandbox root PID registered: host_pid=" << host_pid << std::endl;
+        }
     }
 }
 
@@ -166,7 +179,9 @@ static void inject_ip_blocklist(struct shadow_bpf *skel) {
         if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) == 0) count++;
     }
 
-    std::cout << "[Shadow] " << count << " known-malicious IPs loaded into Ring 0 block map." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << "[Shadow] " << count << " known-malicious IPs loaded into Ring 0 block map." << std::endl;
+    }
 }
 
 bool Observer::start() {
@@ -213,8 +228,10 @@ bool Observer::start() {
         return false;
     }
 
-    std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
-              << " Kernel probe attached. All hooks live." << std::endl;
+    if (g_verbose_mode) {
+        std::cout << COLOR_MAGENTA << "[eBPF]" << COLOR_RESET
+                  << " Kernel probe attached. All hooks live." << std::endl;
+    }
 
     //Start background polling thread
     running = true;
