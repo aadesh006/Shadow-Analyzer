@@ -432,27 +432,6 @@ sudo ./shadow analyze esbuild  # should return CLEAN with CDN traffic logged
 
 ---
 
-## Documentation
-
-**Main Documentation:**
-- [README.md](README.md) - Project overview and usage
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines
-- [SECURITY.md](SECURITY.md) - Security policy
-
-**Project Documentation:**
-- [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) - Current project status
-- [docs/PROGRESS.md](docs/PROGRESS.md) - Development progress log
-
-**Phase 3 Advanced Features:**
-- [docs/phase3/PHASE3_FINAL_SUMMARY.md](docs/phase3/PHASE3_FINAL_SUMMARY.md) - Phase 3 completion summary
-- [docs/phase3/THREAT_INTELLIGENCE_EXPANSION.md](docs/phase3/THREAT_INTELLIGENCE_EXPANSION.md) - Threat intelligence details
-
-**Scripts:**
-- `scripts/demos/` - Demo scripts for features
-- `scripts/tests/` - Integration test scripts
-
----
-
 ## Background
 
 Shadow was built in response to the axios npm supply chain attack (March 2026). The only tool that caught that attack in CI was StepSecurity Harden-Runner — an enterprise-grade GitHub Actions product. There was no open-source, developer-local equivalent that could analyze a package before installation using runtime behavioral analysis at the kernel level.
