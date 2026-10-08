@@ -46,6 +46,9 @@ test-packages/*.deb
 *.swp
 *.swo
 *~
+*.backup
+*.broken
+*.tmp
 
 # ─── Session exports ─────────────────────────────────────────────────────────
 shadow-dev-session.json
