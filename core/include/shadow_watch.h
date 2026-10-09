@@ -21,6 +21,7 @@ struct WatchEvent {
         CREDENTIAL_ACCESS,     // LSM blocked credential file access
         MALICIOUS_CONNECTION,  // Connection to known C2 server
         SUSPICIOUS_PROCESS,    // Unexpected process spawn (curl, wget, etc.)
+        PACKAGE_INSTALL,       // Package manager installation detected
         STAGED_PAYLOAD,        // Post-install static scan finding
         POLICY_VIOLATION       // Custom policy rule violation
     };
@@ -39,10 +40,17 @@ struct WatchEvent {
 // Configurable policy for what the daemon should monitor and how to respond
 // ---------------------------------------------------------------------------
 struct WatchPolicy {
-    // What processes to monitor
+    // Process monitoring
     bool monitor_node_processes = true;     // All node/npm/yarn processes
     bool monitor_python_processes = true;   // All python/pip processes  
     bool monitor_all_processes = false;     // All system processes (high overhead)
+    
+    // Package managers to watch
+    bool watch_npm = true;
+    bool watch_pip = true;
+    bool watch_apt = true;
+    bool watch_yarn = true;
+    bool watch_pnpm = true;
     
     // Response actions
     bool log_events = true;                 // Log to /var/log/shadow/watch.log
@@ -50,13 +58,30 @@ struct WatchPolicy {
     bool kill_on_malicious = false;         // Terminate malicious processes
     bool block_connections = false;         // Block network connections (future)
     
+    // Network monitoring
+    bool monitor_outbound_connections = true;
+    bool block_known_malicious = true;
+    bool alert_on_suspicious = true;
+    
     // Static scanning
     bool scan_new_packages = true;          // Scan packages as they're installed
     bool scan_existing_packages = false;    // Periodic scan of existing node_modules
+    bool enable_static_scan = false;        // Use static scanner (disabled due to false positives)
     
     // Alert thresholds
+    int suspicious_connection_threshold = 5;
+    int credential_access_threshold = 1;
     int max_events_per_minute = 10;         // Rate limiting
-    int credential_access_limit = 1;        // Kill after N credential attempts
+    
+    // Logging settings
+    std::string log_file = "/var/log/shadow/watch.log";
+    std::string log_level = "info";
+    std::string max_log_size = "100M";
+    bool rotate_logs = true;
+    
+    // Advanced settings
+    int scan_frequency_ms = 500;            // How often to check for events
+    int event_retention = 1000;             // Max events to keep in memory
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +127,13 @@ public:
     bool load_config(const std::string& config_path);
     const WatchPolicy& get_policy() const { return policy_; }
     
+    // Config parsing helpers
+    void parse_config_option(const std::string& section, const std::string& key, const std::string& value);
+    bool parse_bool(const std::string& value);
+    
+    // Daemon management  
+    bool daemonize();
+    
     // Event handling
     void handle_event(const WatchEvent& event);
     std::vector<WatchEvent> get_recent_events(int limit = 100) const;
@@ -129,6 +161,14 @@ private:
     void log_event(const WatchEvent& event);
     void send_alert(const WatchEvent& event);
     
+    // Logging helpers
+    bool should_rotate_log();
+    void rotate_log_file();
+    std::string event_type_to_string(WatchEvent::Type type);
+    std::string get_event_severity(WatchEvent::Type type);
+    std::string get_hostname();
+    long parse_log_size(const std::string& size_str);
+    
     // Process filtering
     bool is_package_manager_process(const std::string& name);
     bool is_node_process(const std::string& name);
@@ -137,6 +177,10 @@ private:
     // Policy enforcement
     void enforce_policy(const WatchEvent& event);
     void kill_malicious_process(pid_t pid);
+    
+    // Package detection
+    void detect_package_installations();
+    std::string extract_package_name(const std::string& cmdline, const std::string& manager);
     
     // Static scanning integration
     void scan_new_package_installation(const std::string& package_path);
