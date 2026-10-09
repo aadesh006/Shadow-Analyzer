@@ -345,26 +345,34 @@ int main(int argc, char* argv[]) {
         if (watch_command == "start") {
             std::cout << "=== Shadow Watch EDR Daemon ===" << std::endl;
             
+            // Check if daemon is already running
+            std::ifstream pid_file("/var/run/shadow-watch.pid");
+            if (pid_file.is_open()) {
+                pid_t existing_pid;
+                pid_file >> existing_pid;
+                pid_file.close();
+                
+                // Check if process is still running
+                if (kill(existing_pid, 0) == 0) {
+                    std::cout << COLOR_YELLOW << "[WATCH] Daemon already running with PID: " 
+                              << existing_pid << COLOR_RESET << std::endl;
+                    return 1;
+                }
+            }
+            
             ShadowWatchDaemon daemon;
             if (!daemon.start()) {
+                std::cout << COLOR_RED << "[WATCH] Failed to start daemon" << COLOR_RESET << std::endl;
                 return 1;
             }
             
-            // Run daemon until interrupted
-            std::cout << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
-                      << " Press Ctrl+C to stop daemon..." << std::endl;
-            
-            // Simple signal handling for demo
-            bool running = true;
-            signal(SIGINT, [](int) { 
-                std::cout << "\n" << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
-                          << " Received interrupt signal..." << std::endl;
-                exit(0);
-            });
+            // If we get here, we're in the daemon process
+            // The daemon will run until killed via stop command
             
             // Keep daemon running
-            while (running) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+                // TODO: Check for stop signal via IPC
             }
             
         } else if (watch_command == "status") {
