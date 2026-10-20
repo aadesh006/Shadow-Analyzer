@@ -8,8 +8,12 @@
 #include <iomanip>
 #include <mutex>
 #include <algorithm>
+#include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
@@ -67,12 +71,20 @@ bool ShadowWatchDaemon::start(const std::string& config_path) {
         return false;
     }
     
+    // Initialize IPC socket for control commands
+    if (!init_ipc_socket()) {
+        return false;
+    }
+    
     // Create log directory
     system("mkdir -p /var/log/shadow 2>/dev/null");
     
     // Start monitoring thread
     running_ = true;
     monitor_thread_ = std::make_unique<std::thread>(&ShadowWatchDaemon::monitor_loop, this);
+    
+    // Start IPC handler thread
+    ipc_thread_ = std::make_unique<std::thread>(&ShadowWatchDaemon::handle_ipc_requests, this);
     
     return true;
 }
@@ -141,21 +153,31 @@ bool ShadowWatchDaemon::daemonize() {
 void ShadowWatchDaemon::stop() {
     if (!running_) return;
     
-    std::cout << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
-              << " Stopping Shadow Watch daemon..." << std::endl;
-    
     running_ = false;
     
+    // Stop monitoring thread
     if (monitor_thread_ && monitor_thread_->joinable()) {
         monitor_thread_->join();
     }
     
+    // Stop IPC thread
+    if (ipc_thread_ && ipc_thread_->joinable()) {
+        ipc_thread_->join();
+    }
+    
+    // Close IPC socket
+    if (ipc_socket_fd_ >= 0) {
+        close(ipc_socket_fd_);
+        unlink(SHADOW_WATCH_SOCKET);
+    }
+    
+    // Stop observer
     if (observer_) {
         observer_->stop();
     }
     
-    std::cout << COLOR_GREEN << "[WATCH] Shadow Watch daemon stopped" 
-              << COLOR_RESET << std::endl;
+    // Remove PID file
+    unlink("/var/run/shadow-watch.pid");
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +416,9 @@ void ShadowWatchDaemon::handle_event(const WatchEvent& event) {
                 break;
             case WatchEvent::SUSPICIOUS_PROCESS:
                 stats_.suspicious_processes++;
+                break;
+            case WatchEvent::PACKAGE_INSTALL:
+                stats_.package_installs++;
                 break;
             default:
                 break;
@@ -743,4 +768,198 @@ std::string ShadowWatchDaemon::extract_package_name(const std::string& cmdline, 
     }
     
     return "unknown";
+}
+
+
+// ===========================================================================
+// IPC (Inter-Process Communication) Implementation
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// init_ipc_socket()
+//
+// Create Unix domain socket for IPC with client commands
+// ---------------------------------------------------------------------------
+bool ShadowWatchDaemon::init_ipc_socket() {
+    // Create Unix domain socket
+    ipc_socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (ipc_socket_fd_ < 0) {
+        return false;
+    }
+    
+    // Remove old socket file if it exists
+    unlink(SHADOW_WATCH_SOCKET);
+    
+    // Bind to socket path
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SHADOW_WATCH_SOCKET, sizeof(addr.sun_path) - 1);
+    
+    if (bind(ipc_socket_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(ipc_socket_fd_);
+        return false;
+    }
+    
+    // Set permissions so root and shadow group can access
+    chmod(SHADOW_WATCH_SOCKET, 0660);
+    
+    // Listen for connections
+    if (listen(ipc_socket_fd_, 5) < 0) {
+        close(ipc_socket_fd_);
+        unlink(SHADOW_WATCH_SOCKET);
+        return false;
+    }
+    
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// handle_ipc_requests()
+//
+// Thread that handles incoming IPC requests from clients
+// ---------------------------------------------------------------------------
+void ShadowWatchDaemon::handle_ipc_requests() {
+    while (running_) {
+        // Accept connection (with timeout)
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(ipc_socket_fd_, &read_fds);
+        
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        
+        int result = select(ipc_socket_fd_ + 1, &read_fds, NULL, NULL, &timeout);
+        if (result <= 0) continue; // Timeout or error
+        
+        int client_fd = accept(ipc_socket_fd_, NULL, NULL);
+        if (client_fd < 0) continue;
+        
+        // Read command from client
+        int cmd_int;
+        ssize_t bytes_read = read(client_fd, &cmd_int, sizeof(cmd_int));
+        if (bytes_read != sizeof(cmd_int)) {
+            close(client_fd);
+            continue;
+        }
+        
+        IPCCommand cmd = static_cast<IPCCommand>(cmd_int);
+        std::string response = handle_ipc_command(cmd);
+        
+        // Send response back
+        write(client_fd, response.c_str(), response.length());
+        close(client_fd);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// handle_ipc_command()
+//
+// Process individual IPC commands and generate responses
+// ---------------------------------------------------------------------------
+std::string ShadowWatchDaemon::handle_ipc_command(IPCCommand cmd) {
+    std::stringstream response;
+    
+    switch (cmd) {
+        case IPCCommand::STATUS: {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            response << "Shadow Watch Daemon Status\n"
+                    << "===========================\n"
+                    << "Status: RUNNING\n"
+                    << "PID: " << getpid() << "\n"
+                    << "Uptime: " << start_time_ << "\n"
+                    << "Total Events: " << stats_.total_events << "\n"
+                    << "Credential Blocks: " << stats_.credential_blocks << "\n"
+                    << "Malicious Connections: " << stats_.malicious_connections << "\n"
+                    << "Suspicious Processes: " << stats_.suspicious_processes << "\n"
+                    << "Package Installs: " << stats_.package_installs << "\n"
+                    << "Last Event: " << (stats_.last_event_time.empty() ? "None" : stats_.last_event_time) << "\n";
+            break;
+        }
+        
+        case IPCCommand::STOP: {
+            response << "Stopping Shadow Watch daemon...\n";
+            // Schedule stop on next loop iteration
+            running_ = false;
+            break;
+        }
+        
+        case IPCCommand::LOGS: {
+            std::lock_guard<std::mutex> lock(events_mutex_);
+            response << "Recent Events (last " << recent_events_.size() << "):\n";
+            response << "==========================================\n";
+            
+            for (size_t i = recent_events_.size(); i > 0 && i > recent_events_.size() - 10; i--) {
+                const auto& event = recent_events_[i-1];
+                response << "[" << event.timestamp << "] "
+                        << event_type_to_string(event.type) << " - "
+                        << event.description << "\n";
+            }
+            break;
+        }
+        
+        case IPCCommand::RELOAD_CONFIG: {
+            if (load_config("")) {
+                response << "Configuration reloaded successfully\n";
+            } else {
+                response << "Failed to reload configuration\n";
+            }
+            break;
+        }
+        
+        default:
+            response << "Unknown command\n";
+    }
+    
+    return response.str();
+}
+
+// ---------------------------------------------------------------------------
+// send_ipc_command() - Static helper
+//
+// Client-side function to send commands to running daemon
+// ---------------------------------------------------------------------------
+bool ShadowWatchDaemon::send_ipc_command(IPCCommand cmd, std::string& response) {
+    // Create socket
+    int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        response = "Error: Failed to create socket\n";
+        return false;
+    }
+    
+    // Connect to daemon socket
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SHADOW_WATCH_SOCKET, sizeof(addr.sun_path) - 1);
+    
+    if (connect(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        response = "Error: Cannot connect to daemon. Is it running?\n";
+        close(sock_fd);
+        return false;
+    }
+    
+    // Send command
+    int cmd_int = static_cast<int>(cmd);
+    if (write(sock_fd, &cmd_int, sizeof(cmd_int)) != sizeof(cmd_int)) {
+        response = "Error: Failed to send command\n";
+        close(sock_fd);
+        return false;
+    }
+    
+    // Read response
+    char buffer[4096];
+    ssize_t bytes_read = read(sock_fd, buffer, sizeof(buffer) - 1);
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';
+        response = std::string(buffer);
+    } else {
+        response = "Error: No response from daemon\n";
+        close(sock_fd);
+        return false;
+    }
+    
+    close(sock_fd);
+    return true;
 }
