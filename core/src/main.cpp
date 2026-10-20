@@ -377,21 +377,37 @@ int main(int argc, char* argv[]) {
             
         } else if (watch_command == "status") {
             std::cout << "=== Shadow Watch Status ===" << std::endl;
-            std::cout << COLOR_YELLOW << "[WATCH] Status command not yet implemented" 
-                      << COLOR_RESET << std::endl;
-            std::cout << "Future: Show daemon status, recent events, statistics" << std::endl;
+            
+            std::string response;
+            if (ShadowWatchDaemon::send_ipc_command(IPCCommand::STATUS, response)) {
+                std::cout << response;
+            } else {
+                std::cout << COLOR_RED << response << COLOR_RESET;
+                return 1;
+            }
             
         } else if (watch_command == "logs") {
             std::cout << "=== Shadow Watch Logs ===" << std::endl;
-            std::cout << COLOR_YELLOW << "[WATCH] Logs command not yet implemented" 
-                      << COLOR_RESET << std::endl;
-            std::cout << "Future: Show recent log entries, filter by package/type" << std::endl;
+            
+            std::string response;
+            if (ShadowWatchDaemon::send_ipc_command(IPCCommand::LOGS, response)) {
+                std::cout << response;
+            } else {
+                std::cout << COLOR_RED << response << COLOR_RESET;
+                return 1;
+            }
             
         } else if (watch_command == "stop") {
             std::cout << "=== Shadow Watch Stop ===" << std::endl;
-            std::cout << COLOR_YELLOW << "[WATCH] Stop command not yet implemented" 
-                      << COLOR_RESET << std::endl;
-            std::cout << "Future: Signal running daemon to stop gracefully" << std::endl;
+            
+            std::string response;
+            if (ShadowWatchDaemon::send_ipc_command(IPCCommand::STOP, response)) {
+                std::cout << response;
+                std::cout << COLOR_GREEN << "[WATCH] Daemon stop signal sent" << COLOR_RESET << std::endl;
+            } else {
+                std::cout << COLOR_RED << response << COLOR_RESET;
+                return 1;
+            }
             
         } else {
             std::cerr << "Unknown watch command: " << watch_command << std::endl;

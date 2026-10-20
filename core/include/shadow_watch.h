@@ -8,6 +8,17 @@
 #include <memory>
 #include <mutex>
 
+// IPC socket path for daemon communication
+#define SHADOW_WATCH_SOCKET "/var/run/shadow-watch.sock"
+
+// IPC command types
+enum class IPCCommand {
+    STATUS,        // Request daemon status
+    STOP,          // Stop the daemon
+    LOGS,          // Get recent logs
+    RELOAD_CONFIG  // Reload configuration
+};
+
 // Forward declarations
 class Observer;
 
@@ -123,6 +134,12 @@ public:
     void stop();
     bool is_running() const { return running_; }
     
+    // IPC control
+    bool init_ipc_socket();
+    void handle_ipc_requests();
+    std::string handle_ipc_command(IPCCommand cmd);
+    static bool send_ipc_command(IPCCommand cmd, std::string& response);
+    
     // Configuration
     bool load_config(const std::string& config_path);
     const WatchPolicy& get_policy() const { return policy_; }
@@ -144,6 +161,7 @@ public:
         int credential_blocks = 0;
         int malicious_connections = 0;
         int suspicious_processes = 0;
+        int package_installs = 0;
         int packages_scanned = 0;
         std::string uptime;
         std::string last_event_time;
@@ -188,7 +206,10 @@ private:
 private:
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> monitor_thread_;
+    std::unique_ptr<std::thread> ipc_thread_;
     std::unique_ptr<Observer> observer_;
+    
+    int ipc_socket_fd_ = -1;
     
     WatchPolicy policy_;
     mutable std::mutex events_mutex_;
