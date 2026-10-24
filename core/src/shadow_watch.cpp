@@ -53,31 +53,49 @@ bool ShadowWatchDaemon::start(const std::string& config_path) {
     std::cout << COLOR_CYAN << "[WATCH]" << COLOR_RESET 
               << " Starting Shadow Watch EDR daemon..." << std::endl;
     
+    // Create log directory early
+    system("mkdir -p /var/log/shadow 2>/dev/null");
+    
+    // Open error log file before daemonizing
+    std::ofstream error_log("/var/log/shadow/daemon-error.log", std::ios::app);
+    error_log << "\n=== Daemon Start Attempt: " << start_time_ << " ===" << std::endl;
+    
     // Daemonize the process
     if (!daemonize()) {
-        std::cerr << COLOR_RED << "[WATCH] Failed to daemonize process" << COLOR_RESET << std::endl;
+        error_log << "ERROR: Failed to daemonize process" << std::endl;
+        error_log.close();
         return false;
     }
+    
+    // After this point, stdout/stderr are closed - use error_log
+    error_log << "Daemonization successful" << std::endl;
     
     // Load configuration
     if (!load_config(config_path)) {
-        // Log to syslog since we're now daemonized
-        // For now, continue with defaults
+        error_log << "WARNING: Failed to load config, using defaults" << std::endl;
+        // Continue with defaults
+    } else {
+        error_log << "Configuration loaded successfully" << std::endl;
     }
     
     // Initialize eBPF observer (same as sandbox but system-wide)
+    error_log << "Initializing eBPF Observer..." << std::endl;
     observer_ = std::make_unique<Observer>();
     if (!observer_->start()) {
+        error_log << "ERROR: Failed to start eBPF Observer" << std::endl;
+        error_log.close();
         return false;
     }
+    error_log << "eBPF Observer started successfully" << std::endl;
     
     // Initialize IPC socket for control commands
+    error_log << "Initializing IPC socket..." << std::endl;
     if (!init_ipc_socket()) {
+        error_log << "ERROR: Failed to initialize IPC socket" << std::endl;
+        error_log.close();
         return false;
     }
-    
-    // Create log directory
-    system("mkdir -p /var/log/shadow 2>/dev/null");
+    error_log << "IPC socket initialized successfully" << std::endl;
     
     // Start monitoring thread
     running_ = true;
@@ -85,6 +103,9 @@ bool ShadowWatchDaemon::start(const std::string& config_path) {
     
     // Start IPC handler thread
     ipc_thread_ = std::make_unique<std::thread>(&ShadowWatchDaemon::handle_ipc_requests, this);
+    
+    error_log << "All threads started - daemon running" << std::endl;
+    error_log.close();
     
     return true;
 }
@@ -672,8 +693,8 @@ void ShadowWatchDaemon::kill_malicious_process(pid_t pid) {
 // Monitor for npm, pip, apt package manager processes
 // ---------------------------------------------------------------------------
 void ShadowWatchDaemon::detect_package_installations() {
-    // This would typically integrate with eBPF process monitoring
-    // For now, check for running package manager processes via /proc
+    // Monitor for npm, pip, apt package manager processes
+    // Check /proc for running package manager processes
     
     DIR* proc_dir = opendir("/proc");
     if (!proc_dir) return;
@@ -683,48 +704,81 @@ void ShadowWatchDaemon::detect_package_installations() {
         // Skip non-numeric entries (only look at PID directories)
         if (!isdigit(entry->d_name[0])) continue;
         
-        std::string proc_path = "/proc/" + std::string(entry->d_name) + "/comm";
-        std::ifstream comm_file(proc_path);
-        if (!comm_file.is_open()) continue;
+        pid_t pid = std::stoi(entry->d_name);
         
-        std::string comm;
-        std::getline(comm_file, comm);
+        // Skip if we've already tracked this PID
+        if (monitored_pids_.find(pid) != monitored_pids_.end()) {
+            continue;
+        }
         
-        // Check for package manager processes
-        if (comm == "npm" || comm == "pip" || comm == "pip3" || 
-            comm == "apt" || comm == "apt-get" || comm == "yarn" || comm == "pnpm") {
+        // Get command line to see the actual command
+        std::string cmdline_path = "/proc/" + std::string(entry->d_name) + "/cmdline";
+        std::ifstream cmdline_file(cmdline_path);
+        if (!cmdline_file.is_open()) continue;
+        
+        std::string cmdline;
+        std::getline(cmdline_file, cmdline);
+        cmdline_file.close();
+        
+        // Replace null chars with spaces for readability
+        for (char& c : cmdline) {
+            if (c == '\0') c = ' ';
+        }
+        
+        // Check if this is a package manager command
+        bool is_package_mgr = false;
+        std::string manager_type;
+        
+        if (cmdline.find("/npm") != std::string::npos || cmdline.find(" npm ") != std::string::npos) {
+            is_package_mgr = true;
+            manager_type = "npm";
+        } else if (cmdline.find("/pip") != std::string::npos || cmdline.find(" pip") != std::string::npos) {
+            is_package_mgr = true;
+            manager_type = "pip";
+        } else if (cmdline.find("/apt") != std::string::npos || cmdline.find("apt-get") != std::string::npos) {
+            is_package_mgr = true;
+            manager_type = "apt";
+        } else if (cmdline.find("/yarn") != std::string::npos) {
+            is_package_mgr = true;
+            manager_type = "yarn";
+        } else if (cmdline.find("/pnpm") != std::string::npos) {
+            is_package_mgr = true;
+            manager_type = "pnpm";
+        }
+        
+        // Only alert on install operations
+        if (is_package_mgr && (cmdline.find("install") != std::string::npos || 
+                              cmdline.find("add") != std::string::npos)) {
             
-            // Get command line to see what package is being installed
-            std::string cmdline_path = "/proc/" + std::string(entry->d_name) + "/cmdline";
-            std::ifstream cmdline_file(cmdline_path);
-            std::string cmdline;
-            if (cmdline_file.is_open()) {
-                std::getline(cmdline_file, cmdline);
-                // Replace null chars with spaces for readability
-                for (char& c : cmdline) {
-                    if (c == '\0') c = ' ';
+            // Track this PID so we don't alert on it again
+            monitored_pids_.insert(pid);
+            
+            WatchEvent install_event;
+            install_event.type = WatchEvent::PACKAGE_INSTALL;
+            install_event.pid = pid;
+            install_event.process_name = manager_type;
+            install_event.description = "Package installation detected: " + cmdline;
+            install_event.package_name = extract_package_name(cmdline, manager_type);
+            
+            auto now = std::chrono::system_clock::now();
+            auto time_t = std::chrono::system_clock::to_time_t(now);
+            std::stringstream ss;
+            ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+            install_event.timestamp = ss.str();
+            
+            handle_event(install_event);
+        }
+        
+        // Clean up old PIDs from monitored set (processes that no longer exist)
+        // This prevents the set from growing indefinitely
+        if (monitored_pids_.size() > 1000) {
+            std::unordered_set<pid_t> still_alive;
+            for (pid_t tracked_pid : monitored_pids_) {
+                if (kill(tracked_pid, 0) == 0) {
+                    still_alive.insert(tracked_pid);
                 }
             }
-            
-            // Only alert on install operations, not queries
-            if (cmdline.find("install") != std::string::npos ||
-                cmdline.find("add") != std::string::npos) {
-                
-                WatchEvent install_event;
-                install_event.type = WatchEvent::PACKAGE_INSTALL;
-                install_event.pid = std::stoi(entry->d_name);
-                install_event.process_name = comm;
-                install_event.description = "Package installation detected: " + cmdline;
-                install_event.package_name = extract_package_name(cmdline, comm);
-                
-                auto now = std::chrono::system_clock::now();
-                auto time_t = std::chrono::system_clock::to_time_t(now);
-                std::stringstream ss;
-                ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
-                install_event.timestamp = ss.str();
-                
-                handle_event(install_event);
-            }
+            monitored_pids_ = still_alive;
         }
     }
     
