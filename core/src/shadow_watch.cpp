@@ -1,6 +1,7 @@
 #include "../include/shadow_watch.h"
 #include "../include/observer.h"
 #include "../include/static_scanner.h"
+#include "../include/threat_intel.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -954,10 +955,19 @@ std::string ShadowWatchDaemon::handle_ipc_command(IPCCommand cmd) {
         }
         
         case IPCCommand::RELOAD_CONFIG: {
-            if (load_config("")) {
-                response << "Configuration reloaded successfully\n";
+            // Reload configuration file
+            bool config_ok = load_config("");
+            
+            // Reload threat intelligence feeds
+            bool feeds_ok = ThreatIntel::reload_threat_feeds();
+            
+            if (config_ok && feeds_ok) {
+                response << "✓ Configuration and threat feeds reloaded successfully\n";
+            } else if (config_ok) {
+                response << "✓ Configuration reloaded\n"
+                        << "⚠ Threat feeds not available (run 'shadow policy sync')\n";
             } else {
-                response << "Failed to reload configuration\n";
+                response << "✗ Failed to reload configuration\n";
             }
             break;
         }
