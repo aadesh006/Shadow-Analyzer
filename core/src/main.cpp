@@ -14,7 +14,7 @@
 #include "../include/apt_analyzer.h"
 #include "../include/static_scanner.h"
 #include "../include/shadow_watch.h"
-#include "../include/shadow_watch.h"
+#include "../include/policy_sync.h"
 
 // ANSI Terminal Colors
 #define COLOR_RESET   "\033[0m"
@@ -450,6 +450,32 @@ int main(int argc, char* argv[]) {
         if (std::string(argv[i]) == "--verbose") {
             g_verbose_mode = true;
             break;
+        }
+    }
+    
+    if (command == "policy") {
+        // ── shadow policy sync ─────────────────────────────────────────────
+        if (argc < 3) {
+            std::cerr << "Usage: shadow policy sync" << std::endl;
+            return 1;
+        }
+        
+        std::string policy_command = argv[2];
+        
+        if (policy_command == "sync") {
+            PolicySync syncer;
+            if (!syncer.sync()) {
+                std::cerr << COLOR_RED << "[Policy] Sync failed: " 
+                          << syncer.get_last_error() << COLOR_RESET << std::endl;
+                return 1;
+            }
+            std::cout << COLOR_GREEN << "[Policy] ✓ Threat intelligence updated successfully" 
+                      << COLOR_RESET << std::endl;
+            return 0;
+        } else {
+            std::cerr << "Unknown policy command: " << policy_command << std::endl;
+            std::cerr << "Available: sync" << std::endl;
+            return 1;
         }
     }
     
