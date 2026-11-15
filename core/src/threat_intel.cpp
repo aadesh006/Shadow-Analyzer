@@ -3,6 +3,18 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+// Static members for dynamic threat feeds
+std::set<std::string> ThreatIntel::malicious_ips_;
+std::set<std::string> ThreatIntel::malicious_domains_;
+bool ThreatIntel::feeds_loaded_ = false;
+
+// Threat feed file paths
+static const char* IPS_FILE = "/etc/shadow-watch/threat-feeds/ips.txt";
+static const char* DOMAINS_FILE = "/etc/shadow-watch/threat-feeds/domains.txt";
 
 // Reverse-DNS lookup — used for enrichment/logging only, not in the hot event path.
 // Returns the hostname if resolution succeeds, or the original IP string on failure.
@@ -177,6 +189,32 @@ bool ThreatIntel::is_trusted_cdn(const std::string& ip_or_host) {
 // when the IP is dedicated infrastructure — not shared hosting.
 // ---------------------------------------------------------------------------
 bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
+    // Try dynamic threat feeds first
+    if (feeds_loaded_) {
+        // Check dynamic IPs
+        if (malicious_ips_.find(ip_or_host) != malicious_ips_.end()) {
+            return true;
+        }
+        
+        // Check dynamic domains (exact and subdomain match)
+        for (const auto& domain : malicious_domains_) {
+            // Exact match
+            if (ip_or_host == domain) {
+                return true;
+            }
+            
+            // Subdomain match: "abc.evil.com" ends with ".evil.com"
+            const std::string dotted = "." + domain;
+            if (ip_or_host.size() > dotted.size()) {
+                if (ip_or_host.compare(ip_or_host.size() - dotted.size(),
+                                       dotted.size(), dotted) == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // Fallback to built-in malicious domains
     // Known malicious domains — checked as suffix with dot-boundary to avoid
     // false positives from substring matching (e.g. "notngrok.io" must not
     // match "ngrok.io").
@@ -350,4 +388,80 @@ bool ThreatIntel::is_malicious(const std::string& ip_or_host) {
     }
 
     return false;
+}
+
+
+// ---------------------------------------------------------------------------
+// load_file()
+//
+// Load entries from a file into a set. Skips comments (#) and empty lines.
+// ---------------------------------------------------------------------------
+bool ThreatIntel::load_file(const char* filepath, std::set<std::string>& output) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    int count = 0;
+    while (std::getline(file, line)) {
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#') continue;
+        
+        // Trim whitespace
+        size_t start = line.find_first_not_of(" \t\r\n");
+        size_t end = line.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+        
+        std::string entry = line.substr(start, end - start + 1);
+        if (!entry.empty()) {
+            output.insert(entry);
+            count++;
+        }
+    }
+
+    file.close();
+    return count > 0;
+}
+
+// ---------------------------------------------------------------------------
+// load_threat_feeds()
+//
+// Load threat intelligence from files into memory. Falls back to built-in
+// lists if files don't exist.
+// ---------------------------------------------------------------------------
+bool ThreatIntel::load_threat_feeds() {
+    if (feeds_loaded_) {
+        return true; // Already loaded
+    }
+
+    malicious_ips_.clear();
+    malicious_domains_.clear();
+
+    bool ips_loaded = load_file(IPS_FILE, malicious_ips_);
+    bool domains_loaded = load_file(DOMAINS_FILE, malicious_domains_);
+
+    if (ips_loaded || domains_loaded) {
+        std::cout << "[ThreatIntel] Loaded " << malicious_ips_.size() 
+                  << " IPs and " << malicious_domains_.size() 
+                  << " domains from threat feeds" << std::endl;
+        feeds_loaded_ = true;
+        return true;
+    }
+
+    // Files don't exist - use built-in fallback
+    std::cout << "[ThreatIntel] Threat feed files not found, using built-in lists" << std::endl;
+    std::cout << "[ThreatIntel] Run 'shadow policy sync' to download latest threats" << std::endl;
+    feeds_loaded_ = false;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// reload_threat_feeds()
+//
+// Reload threat intelligence from files. Used when policy sync updates feeds.
+// ---------------------------------------------------------------------------
+bool ThreatIntel::reload_threat_feeds() {
+    feeds_loaded_ = false;
+    return load_threat_feeds();
 }
