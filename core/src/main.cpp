@@ -304,26 +304,146 @@ static void print_verdict(int sandbox_status,
 // Global verbose flag
 bool g_verbose_mode = false;
 
+
+// ===========================================================================
+// Help and Version Functions
+// ===========================================================================
+
+void print_help() {
+    std::cout << R"(
+╔══════════════════════════════════════════════════════════════════════════╗
+║                      SHADOW ANALYZER - HELP                              ║
+║                  npm Package Runtime Security Scanner                    ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+DESCRIPTION:
+  Shadow runs npm/pip/apt packages inside a kernel-level isolated sandbox and
+  observes their runtime behavior using eBPF. It detects malicious activity
+  that static analysis tools miss: network C2 connections, credential theft,
+  suspicious process spawning, and more.
+
+USAGE:
+  shadow <command> [options]
+
+COMMANDS:
+
+  analyze <package>[@version] [--verbose]
+    Analyze an npm package from the registry in an isolated sandbox.
+    
+    Examples:
+      shadow analyze axios
+      shadow analyze axios@1.14.1 --verbose
+      shadow analyze /path/to/package.tgz
+
+  apt <package> [--verbose]
+    Analyze a Debian/Ubuntu package.
+    
+    Examples:
+      shadow apt curl
+      shadow apt /path/to/package.deb --verbose
+
+  pip <package> [--verbose]
+    Analyze a Python/PyPI package.
+    
+    Examples:
+      shadow pip requests
+      shadow pip /path/to/package.tar.gz --verbose
+
+  watch <action>
+    Control the Shadow Watch EDR daemon for continuous monitoring.
+    
+    Actions:
+      start   - Start the monitoring daemon
+      stop    - Stop the daemon
+      status  - Show daemon status and statistics
+      logs    - Display recent security events
+    
+    Examples:
+      shadow watch start
+      shadow watch status
+      shadow watch logs
+
+OPTIONS:
+
+  --verbose
+    Show detailed analysis logs including eBPF events, static analysis
+    findings, filesystem changes, and threat intelligence classification.
+
+  --help, -h
+    Display this help message.
+
+  --version, -v
+    Display version information.
+
+VERDICTS:
+
+  CLEAN       - No threats detected. Safe to install.
+  SUSPICIOUS  - Unusual behavior detected. Manual review recommended.
+  MALICIOUS   - Definitive threat detected. DO NOT INSTALL.
+  TIMEOUT     - Package stalled analysis. Manual review required.
+
+EXAMPLES:
+
+  # Analyze before installing
+  shadow analyze axios
+
+  # Detailed analysis
+  shadow analyze express --verbose
+
+  # Start EDR monitoring
+  shadow watch start
+  shadow watch status
+
+REQUIREMENTS:
+
+  • Linux kernel 5.8+
+  • CONFIG_BPF_LSM=y in kernel
+  • Root privileges
+
+PROJECT:
+
+  GitHub: https://github.com/aadesh006/Shadow-Analyzer
+  Author: Aadesh Chaudhari
+
+)" << std::endl;
+}
+
+void print_version() {
+    std::cout << "Shadow Analyzer v1.0" << std::endl;
+    std::cout << "npm Package Runtime Security Scanner" << std::endl;
+    std::cout << "Built with eBPF + Linux Namespaces + LSM Hooks" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Copyright (c) 2026 Aadesh Chaudhari" << std::endl;
+    std::cout << "License: MIT" << std::endl;
+    std::cout << "GitHub: https://github.com/aadesh006/Shadow-Analyzer" << std::endl;
+}
+
+// ===========================================================================
+// Main Entry Point
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // main()
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
+    // Handle no arguments
     if (argc < 2) {
-        std::cerr << "Usage:" << std::endl;
-        std::cerr << "  shadow analyze <package>[@<version>] [--verbose]  — analyze npm package" << std::endl;
-        std::cerr << "  shadow analyze <path/to/package.tgz> [--verbose]  — analyze local npm tarball" << std::endl;
-        std::cerr << "  shadow apt     <package> [--verbose]             — analyze apt/deb package" << std::endl;
-        std::cerr << "  shadow apt     <path/to/package.deb> [--verbose] — analyze local .deb" << std::endl;
-        std::cerr << "  shadow pip     <package> [--verbose]             — analyze pip/PyPI package" << std::endl;
-        std::cerr << "  shadow pip     <path/to/package.tar.gz> [--verbose] — analyze local Python package" << std::endl;
-        std::cerr << "  shadow watch   <start|stop|status|logs>          — EDR daemon control" << std::endl;
-        std::cerr << std::endl;
-        std::cerr << "Options:" << std::endl;
-        std::cerr << "  --verbose    Show detailed analysis logs" << std::endl;
+        print_help();
         return 1;
     }
 
     std::string command = argv[1];
+    
+    // Handle help and version flags
+    if (command == "--help" || command == "-h" || command == "help") {
+        print_help();
+        return 0;
+    }
+    
+    if (command == "--version" || command == "-v" || command == "version") {
+        print_version();
+        return 0;
+    }
     
     // Check for verbose flag in any position
     for (int i = 2; i < argc; i++) {
