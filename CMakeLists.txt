@@ -35,10 +35,11 @@ add_executable(shadow
     core/src/apt_analyzer.cpp
     core/src/static_scanner.cpp
     core/src/shadow_watch.cpp
+    core/src/policy_sync.cpp
 )
 
 add_dependencies(shadow bpf_skeleton)
-target_link_libraries(shadow ${BPF_LIB} ${ELF_LIB} ${Z_LIB})
+target_link_libraries(shadow ${BPF_LIB} ${ELF_LIB} ${Z_LIB} curl)
 target_include_directories(shadow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/src/bpf)
 
 # ─── Test suite ─────────────────────────────────────────────────────────────

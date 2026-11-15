@@ -7,6 +7,28 @@
 
 #include "catch2/catch_amalgamated.hpp"
 #include "../core/include/threat_intel.h"
+#include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// Test helper: create temporary threat feed files
+static void create_test_feed_files(const std::string& ips_content, const std::string& domains_content) {
+    mkdir("/tmp/shadow-test-feeds", 0755);
+    
+    std::ofstream ips("/tmp/shadow-test-feeds/ips.txt");
+    ips << ips_content;
+    ips.close();
+    
+    std::ofstream domains("/tmp/shadow-test-feeds/domains.txt");
+    domains << domains_content;
+    domains.close();
+}
+
+static void cleanup_test_feeds() {
+    unlink("/tmp/shadow-test-feeds/ips.txt");
+    unlink("/tmp/shadow-test-feeds/domains.txt");
+    rmdir("/tmp/shadow-test-feeds");
+}
 
 // ============================================================
 // is_trusted_cdn()
