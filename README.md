@@ -273,6 +273,11 @@ The build pipeline:
 ## Usage
 
 ```bash
+# Get help
+shadow --help
+shadow -h
+shadow --version
+
 # npm/Node.js packages
 sudo shadow analyze <package> [--verbose]
 sudo shadow analyze <package>@<version> [--verbose]
@@ -285,6 +290,12 @@ sudo shadow pip <path/to/package.tar.gz> [--verbose]
 # apt/deb packages
 sudo shadow apt <package> [--verbose]
 sudo shadow apt <path/to/package.deb> [--verbose]
+
+# EDR daemon control
+sudo shadow watch start
+sudo shadow watch stop
+sudo shadow watch status
+sudo shadow watch logs
 
 # Examples
 sudo shadow analyze lodash
